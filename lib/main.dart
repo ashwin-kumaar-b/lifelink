@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'screens/connection_screen.dart';
 import 'screens/home_screen.dart';
+import 'services/stt_tts_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SttTtsService().initialize();
   runApp(const JeevaLinkApp());
 }
 

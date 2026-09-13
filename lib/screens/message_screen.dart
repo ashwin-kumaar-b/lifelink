@@ -2,8 +2,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import '../models/message_packet.dart';
+import '../services/gps_service.dart';
 import '../services/mesh_manager.dart';
 import '../services/native_bridge.dart';
+import '../services/stt_tts_service.dart';
 
 enum MicState { idle, recording, processing, sent }
 
@@ -21,6 +23,8 @@ class MessageScreen extends StatefulWidget {
 
 class _MessageScreenState extends State<MessageScreen> {
   final NativeBridge _bridge = NativeBridge();
+  final SttTtsService _sttTts = SttTtsService();
+  final GpsService _gpsService = GpsService();
   late final MeshManager _meshManager;
   final Uuid _uuid = const Uuid();
   final TextEditingController _textController = TextEditingController();
@@ -30,6 +34,7 @@ class _MessageScreenState extends State<MessageScreen> {
   MicState _micState = MicState.idle;
   bool _isEmergency = true;
   String _currentTranscript = '';
+  String? _detectedEmergencyKeyword;
 
   final List<MessagePacket> _messages = [];
 
@@ -51,6 +56,8 @@ class _MessageScreenState extends State<MessageScreen> {
     super.initState();
     _meshManager = MeshManager(_bridge);
     _listenToNativeEvents();
+    _sttTts.initialize();
+    _gpsService.initialize();
   }
 
   void _listenToNativeEvents() {
@@ -68,9 +75,9 @@ class _MessageScreenState extends State<MessageScreen> {
                   setState(() {
                     _messages.insert(0, newPacket);
                   });
-                  _bridge.speakTTS(
+                  _sttTts.speak(
                     newPacket.text,
-                    language: newPacket.language,
+                    language: _sttLangCodeMap[newPacket.language] ?? 'en-US',
                   );
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
@@ -91,15 +98,7 @@ class _MessageScreenState extends State<MessageScreen> {
           break;
         case 'STT_RESULT':
           final String text = event['text'] ?? '';
-          setState(() {
-            _micState = MicState.processing;
-            _currentTranscript = text;
-            _textController.text = text;
-          });
-          // Auto-send after brief processing delay
-          Future.delayed(const Duration(milliseconds: 400), () {
-            _sendMessagePacket();
-          });
+          _processDecodedText(text);
           break;
         case 'STT_ERROR':
           final String err = event['error'] ?? 'STT Error';
@@ -121,23 +120,64 @@ class _MessageScreenState extends State<MessageScreen> {
     super.dispose();
   }
 
-  // --- Hold-to-Talk Gesture Handlers ---
+  // --- Hold-to-Talk Offline Gesture Handlers ---
   void _onMicPressStart() async {
-    setState(() {
-      _micState = MicState.recording;
-      _currentTranscript = 'Recording... Hold mic button';
-    });
-    final sttCode = _sttLangCodeMap[widget.selectedLanguage] ?? 'en-US';
-    await _bridge.startSTT(language: sttCode);
+    final ok = await _sttTts.startRecording();
+    if (ok) {
+      setState(() {
+        _micState = MicState.recording;
+        _currentTranscript = 'Recording audio wave... Speak now!';
+        _detectedEmergencyKeyword = null;
+      });
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Microphone access denied or unavailable.')),
+      );
+    }
   }
 
   void _onMicPressEnd() async {
     if (_micState == MicState.recording) {
       setState(() {
         _micState = MicState.processing;
-        _currentTranscript = 'Processing speech to text...';
+        _currentTranscript = 'Processing audio wave with Sherpa-ONNX...';
       });
-      await _bridge.stopSTT();
+
+      final String transcribedText = await _sttTts.stopAndTranscribe();
+      _processDecodedText(transcribedText);
+    }
+  }
+
+  void _processDecodedText(String text) {
+    if (text.isEmpty) {
+      setState(() {
+        _micState = MicState.idle;
+        _currentTranscript = 'No speech recognized. Tap mic and try speaking again.';
+      });
+      return;
+    }
+
+    final keyword = _sttTts.checkEmergencyKeyword(text);
+
+    setState(() {
+      _micState = MicState.idle;
+      _currentTranscript = text;
+      _textController.text = text;
+      if (keyword != null) {
+        _isEmergency = true;
+        _detectedEmergencyKeyword = keyword;
+      }
+    });
+
+    if (keyword != null) {
+      _sttTts.speak('Emergency keyword $keyword detected!');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('🚨 EMERGENCY KEYWORD "$keyword" DETECTED! Priority set to High.'),
+          backgroundColor: Colors.redAccent,
+          duration: const Duration(seconds: 4),
+        ),
+      );
     }
   }
 
@@ -150,15 +190,19 @@ class _MessageScreenState extends State<MessageScreen> {
       return;
     }
 
+    // Acquire fresh high-precision satellite GPS location
+    await _gpsService.getFreshBestPosition();
+
     final packet = MessagePacket(
       id: 'MSG-${_uuid.v4().substring(0, 6).toUpperCase()}',
       type: _isEmergency ? 'EMERGENCY' : 'NORMAL',
       language: widget.selectedLanguage,
       text: textToSend,
-      latitude: 13.0827,
-      longitude: 80.2707,
-      ttl: 5,
+      latitude: _gpsService.currentLatitude,
+      longitude: _gpsService.currentLongitude,
+      ttl: 2,
       timestamp: DateTime.now().toIso8601String(),
+      isSelf: true,
     );
 
     _meshManager.registerSentMessage(packet);
@@ -432,8 +476,10 @@ class _MessageScreenState extends State<MessageScreen> {
                                 icon: const Icon(Icons.volume_up, size: 20),
                                 tooltip: 'TTS Playback',
                                 onPressed: () {
-                                  _bridge.speakTTS(msg.text,
-                                      language: msg.language);
+                                  _sttTts.speak(
+                                    msg.text,
+                                    language: _sttLangCodeMap[msg.language] ?? 'en-US',
+                                  );
                                 },
                               ),
                             ],

@@ -2,8 +2,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import '../models/message_packet.dart';
+import '../services/gps_service.dart';
 import '../services/mesh_manager.dart';
 import '../services/native_bridge.dart';
+import '../services/stt_tts_service.dart';
 import '../widgets/app_drawer.dart';
 import 'radar_screen.dart';
 
@@ -18,6 +20,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final NativeBridge _bridge = NativeBridge();
+  final SttTtsService _sttTts = SttTtsService();
+  final GpsService _gpsService = GpsService();
   late final MeshManager _meshManager;
   final Uuid _uuid = const Uuid();
   final TextEditingController _textController = TextEditingController();
@@ -51,6 +55,8 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _meshManager = MeshManager(_bridge);
     _listenToNativeEvents();
+    _sttTts.initialize();
+    _gpsService.initialize();
   }
 
   void _listenToNativeEvents() {
@@ -68,9 +74,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   setState(() {
                     _messages.insert(0, newPacket);
                   });
-                  _bridge.speakTTS(
+                  _sttTts.speak(
                     newPacket.text,
-                    language: newPacket.language,
+                    language: _sttLangCodeMap[newPacket.language] ?? 'en-US',
                   );
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
@@ -91,14 +97,7 @@ class _HomeScreenState extends State<HomeScreen> {
           break;
         case 'STT_RESULT':
           final String text = event['text'] ?? '';
-          setState(() {
-            _micState = MicState.processing;
-            _currentTranscript = text;
-            _textController.text = text;
-          });
-          Future.delayed(const Duration(milliseconds: 400), () {
-            _sendMessagePacket();
-          });
+          _processDecodedText(text);
           break;
         case 'STT_ERROR':
           final String err = event['error'] ?? 'STT Error';
@@ -107,6 +106,19 @@ class _HomeScreenState extends State<HomeScreen> {
           });
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Speech error: $err')),
+          );
+          break;
+        case 'PEER_CONNECTED':
+        case 'PEER_DISCOVERED':
+          final String peerName = event['peerName'] ?? 'New Peer';
+          print('HomeScreen: Peer connected/discovered [$peerName]. Auto-syncing stored messages...');
+          _meshManager.syncStoredPacketsToPeer();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('⚡ Connected to $peerName. Syncing emergency history...'),
+              backgroundColor: Colors.blueAccent,
+              duration: const Duration(seconds: 3),
+            ),
           );
           break;
       }
@@ -120,22 +132,70 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  // --- Offline Hold & Tap Mic Gesture Handlers ---
+  void _toggleMicRecording() async {
+    if (_micState == MicState.recording) {
+      _onMicPressEnd();
+    } else if (_micState == MicState.idle) {
+      _onMicPressStart();
+    }
+  }
+
   void _onMicPressStart() async {
-    setState(() {
-      _micState = MicState.recording;
-      _currentTranscript = 'Recording speech... Hold mic button';
-    });
-    final sttCode = _sttLangCodeMap[_selectedLanguage] ?? 'en-US';
-    await _bridge.startSTT(language: sttCode);
+    final ok = await _sttTts.startRecording();
+    if (ok) {
+      setState(() {
+        _micState = MicState.recording;
+        _currentTranscript = 'Recording audio wave... Speak now!';
+      });
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Microphone permission denied or unavailable.')),
+      );
+    }
   }
 
   void _onMicPressEnd() async {
     if (_micState == MicState.recording) {
       setState(() {
         _micState = MicState.processing;
-        _currentTranscript = 'Processing speech to text...';
+        _currentTranscript = 'Processing audio wave with Sherpa-ONNX...';
       });
-      await _bridge.stopSTT();
+
+      final String transcribedText = await _sttTts.stopAndTranscribe();
+      _processDecodedText(transcribedText);
+    }
+  }
+
+  void _processDecodedText(String text) {
+    if (text.isEmpty) {
+      setState(() {
+        _micState = MicState.idle;
+        _currentTranscript = 'No speech recognized. Tap mic and try speaking again.';
+      });
+      return;
+    }
+
+    final keyword = _sttTts.checkEmergencyKeyword(text);
+
+    setState(() {
+      _micState = MicState.idle;
+      _currentTranscript = text;
+      _textController.text = text;
+      if (keyword != null) {
+        _isEmergencyMode = true;
+      }
+    });
+
+    if (keyword != null) {
+      _sttTts.speak('Emergency keyword $keyword detected!');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('🚨 EMERGENCY KEYWORD "$keyword" DETECTED! Priority set to High.'),
+          backgroundColor: Colors.redAccent,
+          duration: const Duration(seconds: 4),
+        ),
+      );
     }
   }
 
@@ -148,15 +208,19 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    // Acquire fresh high-precision satellite GPS location
+    await _gpsService.getFreshBestPosition();
+
     final packet = MessagePacket(
       id: 'MSG-${_uuid.v4().substring(0, 6).toUpperCase()}',
       type: _isEmergencyMode ? 'EMERGENCY' : 'NORMAL',
       language: _selectedLanguage,
       text: textToSend,
-      latitude: 13.0827,
-      longitude: 80.2707,
-      ttl: 5,
+      latitude: _gpsService.currentLatitude,
+      longitude: _gpsService.currentLongitude,
+      ttl: 2,
       timestamp: DateTime.now().toIso8601String(),
+      isSelf: true,
     );
 
     _meshManager.registerSentMessage(packet);
@@ -221,11 +285,11 @@ class _HomeScreenState extends State<HomeScreen> {
   String _getMicStateText() {
     switch (_micState) {
       case MicState.idle:
-        return 'HOLD MIC TO SPEAK';
+        return 'TAP OR HOLD MIC TO SPEAK';
       case MicState.recording:
-        return 'RECORDING... (RELEASE TO SEND)';
+        return 'RECORDING... (TAP AGAIN TO STOP)';
       case MicState.processing:
-        return 'PROCESSING STT...';
+        return 'PROCESSING SPEECH TO TEXT...';
       case MicState.sent:
         return 'SENT TO MESH!';
     }
@@ -298,6 +362,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             children: [
               GestureDetector(
+                onTap: _toggleMicRecording,
                 onLongPressStart: (_) => _onMicPressStart(),
                 onLongPressEnd: (_) => _onMicPressEnd(),
                 child: AnimatedContainer(
@@ -440,8 +505,10 @@ class _HomeScreenState extends State<HomeScreen> {
                               icon: const Icon(Icons.volume_up, size: 20),
                               tooltip: 'TTS Playback',
                               onPressed: () {
-                                _bridge.speakTTS(msg.text,
-                                    language: msg.language);
+                                _sttTts.speak(
+                                  msg.text,
+                                  language: _sttLangCodeMap[msg.language] ?? 'en-US',
+                                );
                               },
                             ),
                           ],

@@ -9,6 +9,7 @@ class MessagePacket {
   final double longitude;
   final int ttl;
   final String timestamp;
+  final bool isSelf;
 
   MessagePacket({
     required this.id,
@@ -19,6 +20,7 @@ class MessagePacket {
     required this.longitude,
     required this.ttl,
     required this.timestamp,
+    this.isSelf = false,
   });
 
   bool get isEmergency => type == 'EMERGENCY';

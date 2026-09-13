@@ -5,7 +5,9 @@ import 'native_bridge.dart';
 class MeshManager {
   final NativeBridge _bridge;
   final LinkedHashSet<String> _seenMessageIds = LinkedHashSet<String>();
+  final List<MessagePacket> _storedMessageBuffer = <MessagePacket>[];
   static const int maxCacheSize = 1000;
+  static const int maxStoredBuffer = 100;
 
   MeshManager(this._bridge);
 
@@ -26,6 +28,9 @@ class MeshManager {
       _seenMessageIds.remove(_seenMessageIds.first);
     }
 
+    // Save to store-and-forward buffer for syncing with future newly connected peers
+    _storePacket(packet);
+
     // Notify application to display & speak message
     onNewMessage(packet);
 
@@ -42,6 +47,7 @@ class MeshManager {
         longitude: packet.longitude,
         ttl: remainingTtl,
         timestamp: packet.timestamp,
+        isSelf: false,
       );
 
       // Re-broadcast relayed packet to nearby devices
@@ -58,7 +64,32 @@ class MeshManager {
     if (_seenMessageIds.length > maxCacheSize) {
       _seenMessageIds.remove(_seenMessageIds.first);
     }
+    _storePacket(packet);
+  }
+
+  void _storePacket(MessagePacket packet) {
+    // Avoid duplicate storage in buffer
+    _storedMessageBuffer.removeWhere((p) => p.id == packet.id);
+    _storedMessageBuffer.insert(0, packet);
+    if (_storedMessageBuffer.length > maxStoredBuffer) {
+      _storedMessageBuffer.removeLast();
+    }
+  }
+
+  /// Automatically syncs all stored historical messages when a new device connects/enters range
+  Future<void> syncStoredPacketsToPeer() async {
+    if (_storedMessageBuffer.isEmpty) return;
+
+    print('MeshManager: New peer connected! Auto-syncing ${_storedMessageBuffer.length} stored packets...');
+    for (var packet in _storedMessageBuffer) {
+      if (packet.ttl > 0) {
+        // Send stored packet to the newly connected peer
+        await _bridge.sendMessage(packet);
+        await Future.delayed(const Duration(milliseconds: 200)); // Brief delay between burst packets
+      }
+    }
   }
 
   bool isSeen(String messageId) => _seenMessageIds.contains(messageId);
 }
+
