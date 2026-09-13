@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import '../models/message_packet.dart';
+import '../services/gps_service.dart';
 import '../services/native_bridge.dart';
 import '../utils/gps_calculator.dart';
 import '../widgets/app_drawer.dart';
@@ -24,12 +25,14 @@ class _RadarScreenState extends State<RadarScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _sweepController;
   final NativeBridge _bridge = NativeBridge();
+  final GpsService _gpsService = GpsService();
+  StreamSubscription? _gpsSubscription;
 
   late String _currentLanguage;
 
   // Base coordinates (my phone location)
-  final double _myLat = 13.0827;
-  final double _myLon = 80.2707;
+  double _myLat = 13.0827;
+  double _myLon = 80.2707;
 
   RadarNode? _selectedNode;
   String? _trackedNodeId; // ID of the phone being single-tracked
@@ -45,10 +48,31 @@ class _RadarScreenState extends State<RadarScreen>
     )..repeat();
 
     _bridge.discoverPeers();
+    _initGps();
+  }
+
+  void _initGps() async {
+    final pos = await _gpsService.initialize();
+    if (pos != null && mounted) {
+      setState(() {
+        _myLat = pos.latitude;
+        _myLon = pos.longitude;
+      });
+    }
+
+    _gpsSubscription = _gpsService.getPositionStream().listen((pos) {
+      if (mounted) {
+        setState(() {
+          _myLat = pos.latitude;
+          _myLon = pos.longitude;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    _gpsSubscription?.cancel();
     _sweepController.dispose();
     super.dispose();
   }
@@ -56,8 +80,9 @@ class _RadarScreenState extends State<RadarScreen>
   /// Calculates dynamic auto-scaling distance and builds RadarNodes
   Map<String, dynamic> _getScaledRadarNodes() {
     final List<RadarNode> allNodes = [];
+    final peerMessages = widget.messages.where((msg) => !msg.isSelf).toList();
 
-    for (var msg in widget.messages) {
+    for (var msg in peerMessages) {
       final double distMeters = GpsCalculator.calculateDistanceMeters(
         _myLat,
         _myLon,
@@ -79,10 +104,14 @@ class _RadarScreenState extends State<RadarScreen>
         bearing = ((hash % 360) * pi) / 180.0;
       }
 
+      final String displayName = msg.id.startsWith('NODE-')
+          ? msg.id
+          : 'Sender';
+
       allNodes.add(
         RadarNode(
           id: msg.id,
-          name: 'Sender (${msg.id})',
+          name: displayName,
           angle: bearing,
           rawDistanceMeters: distMeters,
           distanceFactor: 0.5, // Will be scaled below
@@ -159,75 +188,80 @@ class _RadarScreenState extends State<RadarScreen>
             ),
           );
 
-    return Scaffold(
-      backgroundColor: Colors.grey.shade900,
-      appBar: AppBar(
-        title: Text(
-          _trackedNodeId == null ? 'Radar (Auto-Scale: $scaleText)' : 'Target Phone Tracker',
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
-        ),
-        backgroundColor: _trackedNodeId == null ? Colors.black : Colors.red.shade900,
-        iconTheme: const IconThemeData(color: Colors.white),
-        actions: [
-          if (_trackedNodeId != null)
-            TextButton.icon(
-              onPressed: () {
-                setState(() {
-                  _trackedNodeId = null; // Exit tracking mode
-                });
-              },
-              icon: const Icon(Icons.close, color: Colors.white, size: 18),
-              label: const Text('Exit Track', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            )
-          else ...[
-            TextButton.icon(
-              onPressed: () {
-                // Inject simulated P2P peer packet for instant PC testing
-                final random = Random();
-                final mockId = 'NODE-${random.nextInt(900) + 100}';
-                final mockDistOffset = (random.nextDouble() * 0.01) - 0.005;
-                final packet = MessagePacket(
-                  id: mockId,
-                  type: random.nextBool() ? 'EMERGENCY' : 'NORMAL',
-                  language: _currentLanguage,
-                  text: 'Simulated P2P message from $mockId',
-                  latitude: 13.0827 + mockDistOffset,
-                  longitude: 80.2707 + mockDistOffset,
-                  ttl: random.nextInt(4) + 1,
-                  timestamp: DateTime.now().toIso8601String(),
-                );
-                _bridge.sendMessage(packet);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Simulated Peer Broadcast from $mockId')),
-                );
-              },
-              icon: const Icon(Icons.add_location_alt, color: Colors.yellowAccent, size: 18),
-              label: const Text('+ Sim Peer', style: TextStyle(color: Colors.yellowAccent, fontSize: 12)),
-            ),
-            IconButton(
-              icon: const Icon(Icons.refresh, color: Colors.green),
-              tooltip: 'Rescan P2P Nodes',
-              onPressed: () {
-                _bridge.discoverPeers();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Rescanning real P2P nodes...')),
-                );
-              },
-            ),
-          ],
-        ],
-      ),
-      drawer: AppDrawer(
-        selectedLanguage: _currentLanguage,
-        onLanguageChanged: (newLang) {
-          setState(() {
-            _currentLanguage = newLang;
-          });
-        },
-        currentRoute: 'radar',
-      ),
-      body: Column(
+    return Container(
+      color: Colors.grey.shade900,
+      child: Column(
         children: [
+          // Sleek Sub-Header for Radar Controls & Scale Status
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            color: Colors.black,
+            child: Row(
+              children: [
+                Icon(
+                  _trackedNodeId == null ? Icons.radar : Icons.gps_fixed,
+                  color: _trackedNodeId == null ? Colors.greenAccent : Colors.redAccent,
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _trackedNodeId == null ? 'Radar (Auto-Scale: $scaleText)' : 'Tracking Target Phone',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+                if (_trackedNodeId != null)
+                  TextButton.icon(
+                    onPressed: () {
+                      setState(() {
+                        _trackedNodeId = null; // Exit tracking mode
+                      });
+                    },
+                    icon: const Icon(Icons.close, color: Colors.white, size: 16),
+                    label: const Text('Exit Track', style: TextStyle(color: Colors.white, fontSize: 12)),
+                  )
+                else ...[
+                  TextButton.icon(
+                    onPressed: () {
+                      final random = Random();
+                      final mockId = 'NODE-${random.nextInt(900) + 100}';
+                      final mockDistOffset = (random.nextDouble() * 0.01) - 0.005;
+                      final packet = MessagePacket(
+                        id: mockId,
+                        type: random.nextBool() ? 'EMERGENCY' : 'NORMAL',
+                        language: _currentLanguage,
+                        text: 'Simulated P2P message from $mockId',
+                        latitude: 13.0827 + mockDistOffset,
+                        longitude: 80.2707 + mockDistOffset,
+                        ttl: random.nextInt(4) + 1,
+                        timestamp: DateTime.now().toIso8601String(),
+                      );
+                      _bridge.sendMessage(packet);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Simulated Peer Broadcast from $mockId')),
+                      );
+                    },
+                    icon: const Icon(Icons.add_location_alt, color: Colors.yellowAccent, size: 16),
+                    label: const Text('+ Sim Peer', style: TextStyle(color: Colors.yellowAccent, fontSize: 12)),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.refresh, color: Colors.green, size: 20),
+                    tooltip: 'Rescan P2P Nodes',
+                    onPressed: () {
+                      _bridge.discoverPeers();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Rescanning real P2P nodes...')),
+                      );
+                    },
+                  ),
+                ],
+              ],
+            ),
+          ),
           // Single-Target Tracking Mode Active Banner
           if (_trackedNodeId != null && trackedNode != null) ...[
             Container(

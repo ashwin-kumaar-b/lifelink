@@ -95,13 +95,20 @@ class SocketManager(
     private fun handleIncomingTcpConnection(socket: Socket) {
         scope.launch {
             try {
+                val clientIp = socket.inetAddress.hostAddress
+                if (clientIp != null) {
+                    registerPeerIp(clientIp)
+                }
                 socket.use { s ->
                     val reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8))
-                    val message = reader.readLine()
-                    if (!message.isNullOrBlank()) {
-                        Log.d(tag, "Received TCP payload: $message")
-                        withContext(Dispatchers.Main) {
-                            onMessageReceived(message)
+                    var message: String?
+                    while (s.isConnected && !s.isClosed) {
+                        message = reader.readLine() ?: break
+                        if (message.isNotBlank()) {
+                            Log.d(tag, "Received TCP payload from $clientIp: $message")
+                            withContext(Dispatchers.Main) {
+                                onMessageReceived(message)
+                            }
                         }
                     }
                 }
@@ -140,26 +147,35 @@ class SocketManager(
                 lastError = e.message
             }
 
-            // 2. Send TCP to known target IP / connected peers list / standard group owner IP
+            // 2. Send TCP to known target IP / connected peers list / standard group owner IP + Subnet Scan (192.168.49.2 to .15)
             val targetIps = mutableSetOf<String>()
             if (!targetIp.isNullOrBlank()) targetIps.add(targetIp)
             targetIps.add("192.168.49.1") // Standard Android Wi-Fi Direct Group Owner IP
             targetIps.addAll(connectedPeerIps)
 
-            for (ip in targetIps) {
-                try {
-                    Socket(ip, port).use { socket ->
-                        socket.soTimeout = 3000
-                        val writer = PrintWriter(socket.getOutputStream(), true)
-                        writer.println(jsonPayload)
-                        writer.flush()
-                        sentAny = true
-                        Log.d(tag, "Sent TCP packet to $ip")
+            // Add standard Android Wi-Fi Direct DHCP Client Subnet Range (192.168.49.2 -> 192.168.49.15)
+            for (i in 2..15) {
+                targetIps.add("192.168.49.$i")
+            }
+
+            val jobs = targetIps.map { ip ->
+                scope.async {
+                    try {
+                        Socket().use { socket ->
+                            socket.connect(java.net.InetSocketAddress(ip, port), 600)
+                            val writer = PrintWriter(socket.getOutputStream(), true)
+                            writer.println(jsonPayload)
+                            writer.flush()
+                            sentAny = true
+                            registerPeerIp(ip)
+                            Log.d(tag, "Sent TCP packet to $ip")
+                        }
+                    } catch (e: Exception) {
+                        // Silent catch for unreachable IP in range scan
                     }
-                } catch (e: Exception) {
-                    Log.w(tag, "TCP send to $ip failed: ${e.message}")
                 }
             }
+            jobs.awaitAll()
 
             withContext(Dispatchers.Main) {
                 if (sentAny) {
