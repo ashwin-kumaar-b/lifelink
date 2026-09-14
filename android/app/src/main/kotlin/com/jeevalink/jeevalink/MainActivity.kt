@@ -15,12 +15,16 @@ class MainActivity : FlutterActivity() {
     private var socketManager: SocketManager? = null
     private var speechManager: SpeechManager? = null
     private var bluetoothManager: BluetoothManager? = null
+    private var notificationHelper: NotificationHelper? = null
     private var eventSink: EventChannel.EventSink? = null
 
     private var groupOwnerIp: String? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // Initialize Native Notification Helper
+        notificationHelper = NotificationHelper(this)
 
         // EventChannel for streaming asynchronous events to Flutter
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL).setStreamHandler(
@@ -69,6 +73,7 @@ class MainActivity : FlutterActivity() {
 
         // Initialize Native Socket Manager
         socketManager = SocketManager(port = 8888) { jsonMessage ->
+            notificationHelper?.showNotificationFromJson(jsonMessage)
             sendEvent(
                 mapOf(
                     "type" to "MESSAGE_RECEIVED",
@@ -83,6 +88,7 @@ class MainActivity : FlutterActivity() {
         bluetoothManager = BluetoothManager(
             context = this,
             onMessageReceived = { jsonMessage ->
+                notificationHelper?.showNotificationFromJson(jsonMessage)
                 sendEvent(
                     mapOf(
                         "type" to "MESSAGE_RECEIVED",

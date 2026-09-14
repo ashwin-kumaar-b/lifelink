@@ -22,6 +22,9 @@
     <!-- Speech Recognition -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Push Notifications -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:label="JeevaLink"
         android:name="${applicationName}"
