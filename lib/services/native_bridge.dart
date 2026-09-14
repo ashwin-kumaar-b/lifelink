@@ -172,4 +172,70 @@ class NativeBridge {
       return '';
     }
   }
+
+  Future<bool> openAssistantSettings() async {
+    if (kIsWeb) return true;
+    try {
+      final bool res = await _channel.invokeMethod('openAssistantSettings');
+      return res;
+    } catch (e) {
+      print('NativeBridge openAssistantSettings error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> openOverlaySettings() async {
+    if (kIsWeb) return true;
+    try {
+      final bool res = await _channel.invokeMethod('openOverlaySettings');
+      return res;
+    } catch (e) {
+      print('NativeBridge openOverlaySettings error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> startHotwordService() async {
+    if (kIsWeb) return true;
+    try {
+      final bool res = await _channel.invokeMethod('startHotwordService');
+      return res;
+    } catch (e) {
+      print('NativeBridge startHotwordService error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> stopHotwordService() async {
+    if (kIsWeb) return true;
+    try {
+      final bool res = await _channel.invokeMethod('stopHotwordService');
+      return res;
+    } catch (e) {
+      print('NativeBridge stopHotwordService error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> isOverlayGranted() async {
+    if (kIsWeb) return true;
+    try {
+      final bool res = await _channel.invokeMethod('isOverlayGranted');
+      return res;
+    } catch (e) {
+      print('NativeBridge isOverlayGranted error: $e');
+      return false;
+    }
+  }
+
+  Future<String?> checkPendingAssistantTrigger() async {
+    if (kIsWeb) return null;
+    try {
+      final String? trigger = await _channel.invokeMethod('checkPendingAssistantTrigger');
+      return trigger;
+    } catch (e) {
+      print('NativeBridge checkPendingAssistantTrigger error: $e');
+      return null;
+    }
+  }
 }

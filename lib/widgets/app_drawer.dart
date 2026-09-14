@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../screens/emergency_panic_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/radar_screen.dart';
+import '../screens/voice_assistant_settings_screen.dart';
 
 class AppDrawer extends StatelessWidget {
   final String selectedLanguage;
@@ -94,6 +95,22 @@ class AppDrawer extends StatelessWidget {
                     context,
                     MaterialPageRoute(
                       builder: (_) => EmergencyPanicScreen(selectedLanguage: selectedLanguage),
+                    ),
+                  );
+                }
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.record_voice_over, color: Colors.orange),
+              title: const Text('Voice Assistant Settings'),
+              selected: currentRoute == 'voice_settings',
+              onTap: () {
+                Navigator.pop(context);
+                if (currentRoute != 'voice_settings') {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => VoiceAssistantSettingsScreen(selectedLanguage: selectedLanguage),
                     ),
                   );
                 }

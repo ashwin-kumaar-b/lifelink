@@ -193,6 +193,16 @@ class SttTtsService {
     return output;
   }
 
+  bool checkHotword(String text) {
+    if (text.isEmpty) return false;
+    final lowerText = text.toLowerCase().replaceAll(RegExp(r'[^\w\s]'), '');
+    return lowerText.contains('hey jeeva') ||
+        lowerText.contains('hey jiva') ||
+        lowerText.contains('jeeva') ||
+        lowerText.contains('jiva') ||
+        lowerText.contains('hey ziva');
+  }
+
   String? checkEmergencyKeyword(String text) {
     if (text.isEmpty) return null;
     final lowerText = text.toLowerCase().replaceAll(RegExp(r'[^\w\s]'), '');

@@ -33,17 +33,46 @@ class PermissionWrapper extends StatefulWidget {
   State<PermissionWrapper> createState() => _PermissionWrapperState();
 }
 
-class _PermissionWrapperState extends State<PermissionWrapper> {
+class _PermissionWrapperState extends State<PermissionWrapper>
+    with WidgetsBindingObserver {
   bool _isGranted = false;
   String _statusText = 'Checking permissions...';
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _requestPermissions();
   }
 
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _requestPermissions();
+    }
+  }
+
   Future<void> _requestPermissions() async {
+    // 1. Check existing statuses first
+    final locStatus = await Permission.location.status;
+    final micStatus = await Permission.microphone.status;
+
+    if (locStatus.isGranted && micStatus.isGranted) {
+      if (mounted) {
+        setState(() {
+          _isGranted = true;
+        });
+      }
+      return;
+    }
+
+    // 2. Request core permissions
     Map<Permission, PermissionStatus> statuses = await [
       Permission.location,
       Permission.microphone,
@@ -53,20 +82,22 @@ class _PermissionWrapperState extends State<PermissionWrapper> {
       Permission.bluetoothConnect,
     ].request();
 
-    bool allOk = true;
-    statuses.forEach((permission, status) {
-      if (status.isDenied || status.isPermanentlyDenied) {
-        allOk = false;
-      }
-    });
+    final bool locationOk =
+        statuses[Permission.location]?.isGranted ?? locStatus.isGranted;
+    final bool micOk =
+        statuses[Permission.microphone]?.isGranted ?? micStatus.isGranted;
 
-    setState(() {
-      _isGranted = allOk;
-      if (!allOk) {
-        _statusText =
-            'Wi-Fi Direct, Bluetooth, Location, Microphone & Notification permissions are required for JeevaLink offline operation.';
-      }
-    });
+    final bool essentialOk = locationOk && micOk;
+
+    if (mounted) {
+      setState(() {
+        _isGranted = essentialOk;
+        if (!essentialOk) {
+          _statusText =
+              'Location & Microphone permissions are required for JeevaLink voice assistant and offline emergency operation.';
+        }
+      });
+    }
   }
 
   @override

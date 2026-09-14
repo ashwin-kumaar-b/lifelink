@@ -1,6 +1,10 @@
 package com.jeevalink.jeevalink
 
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -19,6 +23,62 @@ class MainActivity : FlutterActivity() {
     private var eventSink: EventChannel.EventSink? = null
 
     private var groupOwnerIp: String? = null
+    private var pendingAssistantTrigger: String? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        unlockWindowFlags()
+        handleVoiceAssistantIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        unlockWindowFlags()
+        handleVoiceAssistantIntent(intent)
+    }
+
+    private fun unlockWindowFlags() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+            val km = getSystemService(android.content.Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+            km?.requestDismissKeyguard(this, null)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+                android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            )
+        }
+    }
+
+    private fun handleVoiceAssistantIntent(intent: Intent?) {
+        if (intent == null) return
+        val action = intent.action
+        val trigger = intent.getStringExtra("EXTRA_VOICE_ASSISTANT_TRIGGER")
+
+        if (Intent.ACTION_ASSIST == action || "android.intent.action.VOICE_COMMAND" == action) {
+            // Power Button long press OR Circle Search / Home bar long press trigger
+            pendingAssistantTrigger = "ASSIST_GESTURE"
+            sendVoiceTriggerEvent("ASSIST_GESTURE")
+        } else if (trigger != null) {
+            pendingAssistantTrigger = trigger
+            sendVoiceTriggerEvent(trigger)
+        }
+    }
+
+    private fun sendVoiceTriggerEvent(triggerType: String) {
+        sendEvent(
+            mapOf(
+                "type" to "VOICE_ASSISTANT_TRIGGERED",
+                "trigger" to triggerType,
+                "autoRecord" to true
+            )
+        )
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -31,6 +91,10 @@ class MainActivity : FlutterActivity() {
             object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                     eventSink = events
+                    // If a pending voice trigger exists when Flutter connects, emit it immediately
+                    pendingAssistantTrigger?.let {
+                        sendVoiceTriggerEvent(it)
+                    }
                 }
 
                 override fun onCancel(arguments: Any?) {
@@ -187,6 +251,83 @@ class MainActivity : FlutterActivity() {
                 }
                 "getGroupOwnerIp" -> {
                     result.success(groupOwnerIp ?: "")
+                }
+                "openAssistantSettings" -> {
+                    val intentsToTry = listOf(
+                        Intent(Settings.ACTION_VOICE_INPUT_SETTINGS),
+                        Intent("android.settings.VOICE_INPUT_SETTINGS"),
+                        Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS),
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+                    )
+                    var opened = false
+                    for (intent in intentsToTry) {
+                        try {
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(intent)
+                            opened = true
+                            break
+                        } catch (e: Exception) {
+                            // continue trying next setting intent
+                        }
+                    }
+                    if (opened) {
+                        result.success(true)
+                    } else {
+                        result.error("INTENT_FAILED", "Could not launch voice assistant settings", null)
+                    }
+                }
+                "openOverlaySettings" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:$packageName")
+                            )
+                            startActivity(intent)
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("INTENT_FAILED", e.message, null)
+                    }
+                }
+                "startHotwordService" -> {
+                    try {
+                        val intent = Intent(this, JeevaHotwordService::class.java).apply {
+                            action = JeevaHotwordService.ACTION_START
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent)
+                        } else {
+                            startService(intent)
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("SERVICE_START_FAILED", e.message, null)
+                    }
+                }
+                "stopHotwordService" -> {
+                    try {
+                        val intent = Intent(this, JeevaHotwordService::class.java).apply {
+                            action = JeevaHotwordService.ACTION_STOP
+                        }
+                        startService(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("SERVICE_STOP_FAILED", e.message, null)
+                    }
+                }
+                "isOverlayGranted" -> {
+                    val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        Settings.canDrawOverlays(this)
+                    } else {
+                        true
+                    }
+                    result.success(granted)
+                }
+                "checkPendingAssistantTrigger" -> {
+                    val trigger = pendingAssistantTrigger
+                    pendingAssistantTrigger = null
+                    result.success(trigger)
                 }
                 else -> result.notImplemented()
             }

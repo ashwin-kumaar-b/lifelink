@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:uuid/uuid.dart';
 import '../models/message_packet.dart';
 import '../services/gps_service.dart';
@@ -9,6 +10,7 @@ import '../services/local_storage_service.dart';
 import '../services/mesh_manager.dart';
 import '../services/native_bridge.dart';
 import '../services/stt_tts_service.dart';
+import '../services/voice_assistant_service.dart';
 import '../widgets/app_drawer.dart';
 import 'radar_screen.dart';
 
@@ -24,6 +26,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final NativeBridge _bridge = NativeBridge();
   final SttTtsService _sttTts = SttTtsService();
+  final VoiceAssistantService _voiceAssistant = VoiceAssistantService();
   final GpsService _gpsService = GpsService();
   final LocalStorageService _storage = LocalStorageService();
   final AudioPlayer _audioPlayer = AudioPlayer();
@@ -32,6 +35,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _textController = TextEditingController();
 
   StreamSubscription? _eventSubscription;
+  StreamSubscription? _assistantSubscription;
 
   // App State
   int _currentTabIndex = 0;
@@ -65,6 +69,63 @@ class _HomeScreenState extends State<HomeScreen> {
     _listenToNativeEvents();
     _sttTts.initialize();
     _gpsService.initialize();
+    _voiceAssistant.initialize();
+    _checkPendingVoiceTrigger();
+
+    _assistantSubscription =
+        _voiceAssistant.onAssistantTriggered.listen((trigger) {
+      _triggerVoiceAssistantRecording(trigger);
+    });
+  }
+
+  Future<void> _checkPendingVoiceTrigger() async {
+    final trigger = await _bridge.checkPendingAssistantTrigger();
+    if (trigger != null && trigger.isNotEmpty) {
+      _triggerVoiceAssistantRecording(trigger);
+    }
+  }
+
+  void _triggerVoiceAssistantRecording(String trigger) async {
+    if (!mounted) return;
+
+    // Request microphone permission if denied before starting recording
+    final status = await Permission.microphone.status;
+    if (status.isDenied || status.isPermanentlyDenied) {
+      final req = await Permission.microphone.request();
+      if (!req.isGranted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Microphone permission is required to record voice input.'),
+          ),
+        );
+        return;
+      }
+    }
+
+    if (_voiceAssistant.audioFeedback) {
+      _sttTts.speak('Jeeva listening. Speak now.');
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.mic, color: Colors.white),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '🎙️ Voice Assistant Triggered [$trigger] — Recording audio now!',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: Colors.red.shade900,
+        duration: const Duration(seconds: 4),
+      ),
+    );
+
+    _onMicPressStart();
   }
 
   Future<void> _loadHistoricalMessages() async {
@@ -81,6 +142,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _eventSubscription = _bridge.eventStream.listen((event) {
       final String type = event['type'] ?? '';
       switch (type) {
+        case 'VOICE_ASSISTANT_TRIGGERED':
+          final String trigger = event['trigger'] ?? 'POWER_BUTTON';
+          _triggerVoiceAssistantRecording(trigger);
+          break;
         case 'MESSAGE_RECEIVED':
           final String rawPayload = event['payload'] ?? '';
           if (rawPayload.isNotEmpty) {
@@ -161,6 +226,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _eventSubscription?.cancel();
+    _assistantSubscription?.cancel();
     _textController.dispose();
     _audioPlayer.dispose();
     super.dispose();
