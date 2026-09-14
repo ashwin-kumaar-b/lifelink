@@ -47,6 +47,7 @@ class _PermissionWrapperState extends State<PermissionWrapper> {
     Map<Permission, PermissionStatus> statuses = await [
       Permission.location,
       Permission.microphone,
+      Permission.notification,
       Permission.nearbyWifiDevices,
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
@@ -63,7 +64,7 @@ class _PermissionWrapperState extends State<PermissionWrapper> {
       _isGranted = allOk;
       if (!allOk) {
         _statusText =
-            'Wi-Fi Direct, Bluetooth, Location & Microphone permissions are required for JeevaLink offline operation.';
+            'Wi-Fi Direct, Bluetooth, Location, Microphone & Notification permissions are required for JeevaLink offline operation.';
       }
     });
   }
