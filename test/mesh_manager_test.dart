@@ -1,7 +1,22 @@
+import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:jeevalink/models/message_packet.dart';
 import 'package:jeevalink/services/mesh_manager.dart';
 import 'package:jeevalink/services/native_bridge.dart';
+
+class FakePathProviderPlatform extends Fake
+    with MockPlatformInterfaceMixin
+    implements PathProviderPlatform {
+  final Directory tempDir;
+  FakePathProviderPlatform(this.tempDir);
+
+  @override
+  Future<String?> getApplicationDocumentsPath() async {
+    return tempDir.path;
+  }
+}
 
 class MockNativeBridge extends NativeBridge {
   final List<MessagePacket> sentPackets = [];
@@ -14,13 +29,24 @@ class MockNativeBridge extends NativeBridge {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('MeshManager Deduplication & Multi-Hop Relay Tests', () {
+    late Directory tempDir;
     late MockNativeBridge mockBridge;
     late MeshManager meshManager;
 
-    setUp(() {
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('lifelink_mesh_test_');
+      PathProviderPlatform.instance = FakePathProviderPlatform(tempDir);
       mockBridge = MockNativeBridge();
       meshManager = MeshManager(mockBridge);
+    });
+
+    tearDown(() async {
+      if (await tempDir.exists()) {
+        await tempDir.delete(recursive: true);
+      }
     });
 
     test('Accepts new message ID and triggers onNewMessage callback', () {

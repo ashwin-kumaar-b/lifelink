@@ -1,9 +1,11 @@
 import 'dart:collection';
 import '../models/message_packet.dart';
+import 'local_storage_service.dart';
 import 'native_bridge.dart';
 
 class MeshManager {
   final NativeBridge _bridge;
+  final LocalStorageService _storage = LocalStorageService();
   final LinkedHashSet<String> _seenMessageIds = LinkedHashSet<String>();
   final List<MessagePacket> _storedMessageBuffer = <MessagePacket>[];
   static const int maxCacheSize = 1000;
@@ -28,8 +30,9 @@ class MeshManager {
       _seenMessageIds.remove(_seenMessageIds.first);
     }
 
-    // Save to store-and-forward buffer for syncing with future newly connected peers
+    // Save to store-and-forward buffer & 24h local JSON storage
     _storePacket(packet);
+    _storage.saveMessage(packet);
 
     // Notify application to display & speak message
     onNewMessage(packet);
@@ -65,6 +68,9 @@ class MeshManager {
       _seenMessageIds.remove(_seenMessageIds.first);
     }
     _storePacket(packet);
+
+    // Save sent message asynchronously in background to local JSON storage
+    _storage.saveMessage(packet);
   }
 
   void _storePacket(MessagePacket packet) {
@@ -92,4 +98,3 @@ class MeshManager {
 
   bool isSeen(String messageId) => _seenMessageIds.contains(messageId);
 }
-

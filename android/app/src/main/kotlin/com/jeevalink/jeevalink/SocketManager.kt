@@ -1,5 +1,7 @@
 package com.jeevalink.jeevalink
 
+import android.content.Context
+import android.net.wifi.WifiManager
 import android.util.Log
 import kotlinx.coroutines.*
 import java.io.BufferedReader
@@ -18,6 +20,7 @@ class SocketManager(
     private val tag = "SocketManager"
     private var serverSocket: ServerSocket? = null
     private var udpSocket: DatagramSocket? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
     private var isListening = false
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -29,7 +32,20 @@ class SocketManager(
         }
     }
 
-    fun startServer() {
+    fun startServer(context: Context? = null) {
+        if (context != null) {
+            try {
+                val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                multicastLock = wifi?.createMulticastLock("JeevaLinkMulticastLock")?.apply {
+                    setReferenceCounted(true)
+                    acquire()
+                }
+                Log.d(tag, "Acquired WifiManager MulticastLock")
+            } catch (e: Exception) {
+                Log.w(tag, "Could not acquire MulticastLock: ${e.message}")
+            }
+        }
+
         if (isListening) return
         isListening = true
 
@@ -127,7 +143,8 @@ class SocketManager(
             try {
                 val broadcastAddresses = listOf(
                     InetAddress.getByName("255.255.255.255"),
-                    InetAddress.getByName("192.168.49.255")
+                    InetAddress.getByName("192.168.49.255"),
+                    InetAddress.getByName("192.168.43.255")
                 )
                 val bytes = (jsonPayload + "\n").toByteArray(Charsets.UTF_8)
                 val sendSocket = DatagramSocket().apply { broadcast = true }
@@ -147,15 +164,17 @@ class SocketManager(
                 lastError = e.message
             }
 
-            // 2. Send TCP to known target IP / connected peers list / standard group owner IP + Subnet Scan (192.168.49.2 to .15)
+            // 2. Send TCP to known target IP / connected peers list / standard group owner IP + Subnet Scan (192.168.49.x and 192.168.43.x)
             val targetIps = mutableSetOf<String>()
             if (!targetIp.isNullOrBlank()) targetIps.add(targetIp)
             targetIps.add("192.168.49.1") // Standard Android Wi-Fi Direct Group Owner IP
+            targetIps.add("192.168.43.1") // Standard Android Local Hotspot Gateway IP
             targetIps.addAll(connectedPeerIps)
 
-            // Add standard Android Wi-Fi Direct DHCP Client Subnet Range (192.168.49.2 -> 192.168.49.15)
-            for (i in 2..15) {
+            // Add standard Wi-Fi Direct & Hotspot DHCP Client Subnet Range (.2 -> .20)
+            for (i in 2..20) {
                 targetIps.add("192.168.49.$i")
+                targetIps.add("192.168.43.$i")
             }
 
             val jobs = targetIps.map { ip ->
@@ -190,6 +209,9 @@ class SocketManager(
     fun stopServer() {
         isListening = false
         try {
+            multicastLock?.let {
+                if (it.isHeld) it.release()
+            }
             serverSocket?.close()
             udpSocket?.close()
         } catch (e: Exception) {

@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 import '../models/message_packet.dart';
 import '../services/gps_service.dart';
+import '../services/local_storage_service.dart';
 import '../services/mesh_manager.dart';
 import '../services/native_bridge.dart';
 import '../services/stt_tts_service.dart';
@@ -22,6 +25,8 @@ class _HomeScreenState extends State<HomeScreen> {
   final NativeBridge _bridge = NativeBridge();
   final SttTtsService _sttTts = SttTtsService();
   final GpsService _gpsService = GpsService();
+  final LocalStorageService _storage = LocalStorageService();
+  final AudioPlayer _audioPlayer = AudioPlayer();
   late final MeshManager _meshManager;
   final Uuid _uuid = const Uuid();
   final TextEditingController _textController = TextEditingController();
@@ -34,6 +39,8 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isEmergencyMode = false;
   MicState _micState = MicState.idle;
   String _currentTranscript = '';
+  String _p2pStatus = 'DISCONNECTED';
+  String _connectedPeerName = '';
 
   final List<MessagePacket> _messages = [];
 
@@ -54,9 +61,20 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _meshManager = MeshManager(_bridge);
+    _loadHistoricalMessages();
     _listenToNativeEvents();
     _sttTts.initialize();
     _gpsService.initialize();
+  }
+
+  Future<void> _loadHistoricalMessages() async {
+    final storedMessages = await _storage.loadMessages();
+    if (mounted) {
+      setState(() {
+        _messages.clear();
+        _messages.addAll(storedMessages.reversed);
+      });
+    }
   }
 
   void _listenToNativeEvents() {
@@ -72,6 +90,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 packet,
                 onNewMessage: (newPacket) {
                   setState(() {
+                    _messages.removeWhere((m) => m.id == newPacket.id);
                     _messages.insert(0, newPacket);
                   });
                   _sttTts.speak(
@@ -108,9 +127,23 @@ class _HomeScreenState extends State<HomeScreen> {
             SnackBar(content: Text('Speech error: $err')),
           );
           break;
+        case 'STATUS_CHANGED':
+          final String status = event['status'] ?? '';
+          if (mounted) {
+            setState(() {
+              _p2pStatus = status;
+            });
+          }
+          break;
         case 'PEER_CONNECTED':
         case 'PEER_DISCOVERED':
           final String peerName = event['peerName'] ?? 'New Peer';
+          if (mounted) {
+            setState(() {
+              _p2pStatus = 'CONNECTED';
+              _connectedPeerName = peerName;
+            });
+          }
           print('HomeScreen: Peer connected/discovered [$peerName]. Auto-syncing stored messages...');
           _meshManager.syncStoredPacketsToPeer();
           ScaffoldMessenger.of(context).showSnackBar(
@@ -129,7 +162,20 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _eventSubscription?.cancel();
     _textController.dispose();
+    _audioPlayer.dispose();
     super.dispose();
+  }
+
+  void _playWhooshSound() async {
+    try {
+      await _audioPlayer.stop();
+      await _audioPlayer.play(
+        AssetSource('sounds/clear_all_whoosh.wav'),
+        position: const Duration(milliseconds: 200),
+      );
+    } catch (e) {
+      print('AudioPlayer whoosh sound error: $e');
+    }
   }
 
   // --- Offline Hold & Tap Mic Gesture Handlers ---
@@ -208,8 +254,8 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // Acquire fresh high-precision satellite GPS location
-    await _gpsService.getFreshBestPosition();
+    // Trigger background GPS location update (non-blocking)
+    _gpsService.getFreshBestPosition();
 
     final packet = MessagePacket(
       id: 'MSG-${_uuid.v4().substring(0, 6).toUpperCase()}',
@@ -240,6 +286,91 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     });
+  }
+
+  void _deleteSingleMessage(MessagePacket msg, int originalIndex) async {
+    HapticFeedback.mediumImpact();
+    SystemSound.play(SystemSoundType.click);
+    await _storage.deleteMessage(msg.id);
+
+    setState(() {
+      _messages.removeWhere((m) => m.id == msg.id);
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Deleted message "${msg.text}"'),
+          action: SnackBarAction(
+            label: 'UNDO',
+            textColor: Colors.amber,
+            onPressed: () async {
+              SystemSound.play(SystemSoundType.click);
+              await _storage.saveMessage(msg);
+              setState(() {
+                _messages.insert(originalIndex.clamp(0, _messages.length), msg);
+              });
+            },
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
+  void _confirmClearAllHistory() {
+    HapticFeedback.heavyImpact();
+    SystemSound.play(SystemSoundType.alert);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.delete_sweep, color: Colors.red),
+            SizedBox(width: 8),
+            Text('Clear 24h History?'),
+          ],
+        ),
+        content: const Text(
+          'This will permanently delete all stored local message logs from your device.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              SystemSound.play(SystemSoundType.click);
+              Navigator.pop(ctx);
+            },
+            child: const Text('CANCEL'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              HapticFeedback.vibrate();
+              _playWhooshSound();
+              await _storage.clearAll();
+              setState(() {
+                _messages.clear();
+              });
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('All 24h local message history cleared.'),
+                    backgroundColor: Colors.redAccent,
+                  ),
+                );
+              }
+            },
+            child: const Text('CLEAR ALL'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _toggleEmergencyMode(bool enabled) {
@@ -295,9 +426,67 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Widget _buildP2pStatusBar() {
+    final bool isConnected = _p2pStatus.contains('CONNECTED') || _p2pStatus.contains('GROUP_OWNER');
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      color: isConnected ? Colors.green.shade800 : Colors.orange.shade900,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Icon(
+                isConnected ? Icons.wifi_tethering : Icons.wifi_tethering_off,
+                color: Colors.white,
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                isConnected
+                    ? '⚡ P2P MESH ACTIVE (${_connectedPeerName.isNotEmpty ? _connectedPeerName : "Peer Connected"})'
+                    : '🔍 Off-Grid P2P: ${_p2pStatus.replaceAll('_', ' ')}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+          InkWell(
+            onTap: () {
+              _bridge.discoverPeers();
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Scanning nearby Wi-Fi Direct P2P nodes...'),
+                  duration: Duration(seconds: 2),
+                ),
+              );
+            },
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              child: Row(
+                children: [
+                  Icon(Icons.refresh, color: Colors.white, size: 16),
+                  SizedBox(width: 4),
+                  Text(
+                    'RESCAN',
+                    style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildMainPttView() {
     return Column(
       children: [
+        _buildP2pStatusBar(),
         // TOP: Emergency Mode Toggle Switch & Notification Banner
         AnimatedContainer(
           duration: const Duration(milliseconds: 300),
@@ -430,26 +619,44 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
 
-        // BOTTOM: Feed Header
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              'Live Mesh Messages Feed (Sent & Received)',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-            ),
+        // BOTTOM: Feed Header & Clear All Button
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                '24h Local Mesh Feed',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+              if (_messages.isNotEmpty)
+                TextButton.icon(
+                  onPressed: _confirmClearAllHistory,
+                  icon: const Icon(Icons.delete_sweep, size: 18, color: Colors.red),
+                  label: const Text(
+                    'Clear All',
+                    style: TextStyle(color: Colors.red, fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                ),
+            ],
           ),
         ),
 
-        // BOTTOM: Message Feed List
+        // BOTTOM: Message Feed List with Animated Swipe-to-Delete
         Expanded(
           child: _messages.isEmpty
               ? const Center(
-                  child: Text(
-                    'No messages sent or received yet.\nHold mic to record or type text.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.history_toggle_off, size: 48, color: Colors.grey),
+                      SizedBox(height: 8),
+                      Text(
+                        'No messages in 24h history.\nHold mic to record or type text.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ],
                   ),
                 )
               : ListView.builder(
@@ -457,61 +664,90 @@ class _HomeScreenState extends State<HomeScreen> {
                   itemCount: _messages.length,
                   itemBuilder: (context, index) {
                     final msg = _messages[index];
-                    return Card(
-                      color: msg.isEmergency
-                          ? Colors.red.shade50
-                          : Colors.grey.shade100,
-                      margin: const EdgeInsets.only(bottom: 8),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: ListTile(
-                        leading: Icon(
-                          msg.isEmergency
-                              ? Icons.warning_amber
-                              : Icons.chat_bubble_outline,
-                          color: msg.isEmergency ? Colors.red : Colors.blue,
+                    return Dismissible(
+                      key: Key(msg.id),
+                      direction: DismissDirection.endToStart,
+                      background: Container(
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.only(right: 20),
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.red.shade600,
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        title: Text(
-                          msg.text,
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: msg.isEmergency
-                                ? Colors.red.shade900
-                                : Colors.black87,
-                          ),
-                        ),
-                        subtitle: Text(
-                          'Lang: ${msg.language.toUpperCase()} | ID: ${msg.id} | TTL: ${msg.ttl}\nTime: ${msg.timestamp.substring(11, 19)} | GPS: ${msg.latitude}, ${msg.longitude}',
-                          style: const TextStyle(fontSize: 11),
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
                           children: [
-                            Chip(
-                              label: Text(
-                                msg.type,
-                                style: const TextStyle(
-                                  fontSize: 9,
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                            Text(
+                              'DELETE',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
                               ),
-                              backgroundColor:
-                                  msg.isEmergency ? Colors.red : Colors.blue,
-                              padding: EdgeInsets.zero,
                             ),
-                            IconButton(
-                              icon: const Icon(Icons.volume_up, size: 20),
-                              tooltip: 'TTS Playback',
-                              onPressed: () {
-                                _sttTts.speak(
-                                  msg.text,
-                                  language: _sttLangCodeMap[msg.language] ?? 'en-US',
-                                );
-                              },
-                            ),
+                            SizedBox(width: 8),
+                            Icon(Icons.delete_forever, color: Colors.white, size: 24),
                           ],
+                        ),
+                      ),
+                      onDismissed: (_) => _deleteSingleMessage(msg, index),
+                      child: Card(
+                        color: msg.isEmergency
+                            ? Colors.red.shade50
+                            : Colors.grey.shade100,
+                        margin: const EdgeInsets.only(bottom: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: ListTile(
+                          leading: Icon(
+                            msg.isEmergency
+                                ? Icons.warning_amber
+                                : Icons.chat_bubble_outline,
+                            color: msg.isEmergency ? Colors.red : Colors.blue,
+                          ),
+                          title: Text(
+                            msg.text,
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: msg.isEmergency
+                                  ? Colors.red.shade900
+                                  : Colors.black87,
+                            ),
+                          ),
+                          subtitle: Text(
+                            'Lang: ${msg.language.toUpperCase()} | ID: ${msg.id} | TTL: ${msg.ttl}\nTime: ${msg.timestamp.length >= 19 ? msg.timestamp.substring(11, 19) : msg.timestamp} | GPS: ${msg.latitude.toStringAsFixed(4)}, ${msg.longitude.toStringAsFixed(4)}',
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Chip(
+                                label: Text(
+                                  msg.type,
+                                  style: const TextStyle(
+                                    fontSize: 9,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                backgroundColor:
+                                    msg.isEmergency ? Colors.red : Colors.blue,
+                                padding: EdgeInsets.zero,
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.volume_up, size: 20),
+                                tooltip: 'TTS Playback',
+                                onPressed: () {
+                                  _sttTts.speak(
+                                    msg.text,
+                                    language: _sttLangCodeMap[msg.language] ?? 'en-US',
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     );

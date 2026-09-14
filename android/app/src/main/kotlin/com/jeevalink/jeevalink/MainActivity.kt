@@ -77,7 +77,7 @@ class MainActivity : FlutterActivity() {
                 )
             )
         }
-        socketManager?.startServer()
+        socketManager?.startServer(context = this)
 
         // Initialize Native Bluetooth Fallback Manager
         bluetoothManager = BluetoothManager(
