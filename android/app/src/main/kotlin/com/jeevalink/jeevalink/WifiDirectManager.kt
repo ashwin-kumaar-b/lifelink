@@ -71,7 +71,11 @@ class WifiDirectManager(
                             requestGroupInfo()
                         } else {
                             onStatusChanged("DISCONNECTED")
-                            createGroup()
+                            discoverPeers { success, _ ->
+                                if (!success) {
+                                    createGroup()
+                                }
+                            }
                         }
                     }
                 }
@@ -99,9 +103,27 @@ class WifiDirectManager(
 
     fun createGroup() {
         try {
+            manager?.removeGroup(channel, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    doCreateGroup()
+                }
+
+                override fun onFailure(reason: Int) {
+                    doCreateGroup()
+                }
+            })
+        } catch (e: SecurityException) {
+            Log.e(tag, "Security exception clearing group", e)
+            doCreateGroup()
+        }
+    }
+
+    private fun doCreateGroup() {
+        try {
             manager?.createGroup(channel, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
                     Log.d(tag, "Local Wi-Fi Direct group created automatically")
+                    onStatusChanged("GROUP_OWNER_CREATED")
                 }
 
                 override fun onFailure(reason: Int) {
