@@ -38,6 +38,38 @@ class MainActivity : FlutterActivity() {
         handleVoiceAssistantIntent(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        pauseBackgroundHotwordService()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        resumeBackgroundHotwordService()
+    }
+
+    private fun pauseBackgroundHotwordService() {
+        try {
+            val intent = Intent(this, JeevaHotwordService::class.java).apply {
+                action = JeevaHotwordService.ACTION_PAUSE_HOTWORD
+            }
+            startService(intent)
+        } catch (e: Exception) {
+            // ignore if service not running
+        }
+    }
+
+    private fun resumeBackgroundHotwordService() {
+        try {
+            val intent = Intent(this, JeevaHotwordService::class.java).apply {
+                action = JeevaHotwordService.ACTION_RESUME_HOTWORD
+            }
+            startService(intent)
+        } catch (e: Exception) {
+            // ignore
+        }
+    }
+
     private fun unlockWindowFlags() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
@@ -60,10 +92,11 @@ class MainActivity : FlutterActivity() {
         val action = intent.action
         val trigger = intent.getStringExtra("EXTRA_VOICE_ASSISTANT_TRIGGER")
 
-        if (Intent.ACTION_ASSIST == action || "android.intent.action.VOICE_COMMAND" == action) {
-            // Power Button long press OR Circle Search / Home bar long press trigger
-            pendingAssistantTrigger = "ASSIST_GESTURE"
-            sendVoiceTriggerEvent("ASSIST_GESTURE")
+        if (Intent.ACTION_ASSIST == action || "android.intent.action.VOICE_COMMAND" == action || "android.intent.action.SEARCH_LONG_PRESS" == action) {
+            // Power Button long press OR Assistant gesture
+            val triggerType = "POWER_BUTTON_ASSIST"
+            pendingAssistantTrigger = triggerType
+            sendVoiceTriggerEvent(triggerType)
         } else if (trigger != null) {
             pendingAssistantTrigger = trigger
             sendVoiceTriggerEvent(trigger)
@@ -71,6 +104,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun sendVoiceTriggerEvent(triggerType: String) {
+        pendingAssistantTrigger = null
         sendEvent(
             mapOf(
                 "type" to "VOICE_ASSISTANT_TRIGGERED",

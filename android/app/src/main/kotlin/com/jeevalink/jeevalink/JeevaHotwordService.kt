@@ -27,6 +27,8 @@ class JeevaHotwordService : Service() {
         const val ACTION_START = "com.jeevalink.ACTION_START_HOTWORD"
         const val ACTION_STOP = "com.jeevalink.ACTION_STOP_HOTWORD"
         const val ACTION_TRIGGER_RECORD = "com.jeevalink.ACTION_TRIGGER_RECORD"
+        const val ACTION_PAUSE_HOTWORD = "com.jeevalink.ACTION_PAUSE_HOTWORD"
+        const val ACTION_RESUME_HOTWORD = "com.jeevalink.ACTION_RESUME_HOTWORD"
     }
 
     private var speechRecognizer: SpeechRecognizer? = null
@@ -44,6 +46,12 @@ class JeevaHotwordService : Service() {
                 stopForeground(true)
                 stopSelf()
                 return START_NOT_STICKY
+            }
+            ACTION_PAUSE_HOTWORD -> {
+                stopHotwordListening()
+            }
+            ACTION_RESUME_HOTWORD -> {
+                startHotwordListening()
             }
             ACTION_TRIGGER_RECORD -> {
                 triggerAppLaunchAndRecord("HEY_JEEVA")

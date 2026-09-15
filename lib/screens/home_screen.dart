@@ -45,6 +45,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _currentTranscript = '';
   String _p2pStatus = 'DISCONNECTED';
   String _connectedPeerName = '';
+  DateTime? _lastTriggerTime;
 
   final List<MessagePacket> _messages = [];
 
@@ -88,42 +89,27 @@ class _HomeScreenState extends State<HomeScreen> {
   void _triggerVoiceAssistantRecording(String trigger) async {
     if (!mounted) return;
 
+    // Debounce triggers within 1.5 seconds to prevent duplicate executions
+    final now = DateTime.now();
+    if (_lastTriggerTime != null &&
+        now.difference(_lastTriggerTime!) < const Duration(milliseconds: 1500)) {
+      return;
+    }
+    _lastTriggerTime = now;
+
+    // Prevent starting recording if already active
+    if (_micState == MicState.recording || _sttTts.isRecording) {
+      return;
+    }
+
     // Request microphone permission if denied before starting recording
     final status = await Permission.microphone.status;
     if (status.isDenied || status.isPermanentlyDenied) {
       final req = await Permission.microphone.request();
       if (!req.isGranted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Microphone permission is required to record voice input.'),
-          ),
-        );
         return;
       }
     }
-
-    if (_voiceAssistant.audioFeedback) {
-      _sttTts.speak('Jeeva listening. Speak now.');
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.mic, color: Colors.white),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                '🎙️ Voice Assistant Triggered [$trigger] — Recording audio now!',
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
-        ),
-        backgroundColor: Colors.red.shade900,
-        duration: const Duration(seconds: 4),
-      ),
-    );
 
     _onMicPressStart();
   }
