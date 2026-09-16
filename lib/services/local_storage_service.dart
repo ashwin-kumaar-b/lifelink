@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
 import '../models/message_packet.dart';
+import 'native_bridge.dart';
 
 class LocalStorageService {
   static final LocalStorageService _instance = LocalStorageService._internal();
@@ -9,20 +11,132 @@ class LocalStorageService {
   LocalStorageService._internal();
 
   static const String _fileName = 'messages_history.json';
+  static const String _userConfigFile = 'user_config.json';
+  final NativeBridge _bridge = NativeBridge();
 
-  Future<File> _getFile() async {
+  String? _cachedDeviceId;
+  String? _cachedUsername;
+
+  Future<File> _getFile(String name) async {
     final directory = await getApplicationDocumentsDirectory();
-    final file = File('${directory.path}/$_fileName');
+    final file = File('${directory.path}/$name');
     if (!await file.parent.exists()) {
       await file.parent.create(recursive: true);
     }
     return file;
   }
 
+  Future<String> getDeviceId() async {
+    if (_cachedDeviceId != null && _cachedDeviceId!.isNotEmpty) {
+      return _cachedDeviceId!;
+    }
+    try {
+      final nativeId = await _bridge.getDeviceId();
+      if (nativeId.isNotEmpty && nativeId != 'DEV_UNKNOWN') {
+        _cachedDeviceId = nativeId;
+        return nativeId;
+      }
+    } catch (_) {}
+
+    final configFile = await _getFile(_userConfigFile);
+    if (await configFile.exists()) {
+      try {
+        final Map<String, dynamic> data = json.decode(await configFile.readAsString());
+        if (data['deviceId'] != null && (data['deviceId'] as String).isNotEmpty) {
+          _cachedDeviceId = data['deviceId'];
+          return _cachedDeviceId!;
+        }
+      } catch (_) {}
+    }
+
+    final newId = 'NODE-${const Uuid().v4().substring(0, 6).toUpperCase()}';
+    _cachedDeviceId = newId;
+    await _updateConfig({'deviceId': newId});
+    return newId;
+  }
+
+  Future<String> getUsername() async {
+    if (_cachedUsername != null && _cachedUsername!.isNotEmpty) {
+      return _cachedUsername!;
+    }
+    final configFile = await _getFile(_userConfigFile);
+    if (await configFile.exists()) {
+      try {
+        final Map<String, dynamic> data = json.decode(await configFile.readAsString());
+        if (data['username'] != null && (data['username'] as String).isNotEmpty) {
+          _cachedUsername = data['username'];
+          return _cachedUsername!;
+        }
+      } catch (_) {}
+    }
+
+    final devId = await getDeviceId();
+    final defaultName = 'User-${devId.length >= 4 ? devId.substring(devId.length - 4) : devId}';
+    _cachedUsername = defaultName;
+    await _updateConfig({'username': defaultName});
+    return defaultName;
+  }
+
+  Future<void> saveUsername(String username) async {
+    final cleanName = username.trim();
+    if (cleanName.isEmpty) return;
+    _cachedUsername = cleanName;
+    await _updateConfig({'username': cleanName});
+  }
+
+  Future<bool> hasSelectedLanguage() async {
+    final configFile = await _getFile(_userConfigFile);
+    if (await configFile.exists()) {
+      try {
+        final Map<String, dynamic> data = json.decode(await configFile.readAsString());
+        return data['hasSelectedLanguage'] == true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  Future<String> getPreferredLanguage() async {
+    final configFile = await _getFile(_userConfigFile);
+    if (await configFile.exists()) {
+      try {
+        final Map<String, dynamic> data = json.decode(await configFile.readAsString());
+        if (data['preferredLanguage'] != null && (data['preferredLanguage'] as String).isNotEmpty) {
+          return data['preferredLanguage'];
+        }
+      } catch (_) {}
+    }
+    return 'en';
+  }
+
+  Future<void> savePreferredLanguage(String languageCode) async {
+    await _updateConfig({
+      'preferredLanguage': languageCode,
+      'hasSelectedLanguage': true,
+    });
+  }
+
+  Future<void> _updateConfig(Map<String, dynamic> updates) async {
+    try {
+      final configFile = await _getFile(_userConfigFile);
+      Map<String, dynamic> current = {};
+      if (await configFile.exists()) {
+        final content = await configFile.readAsString();
+        if (content.isNotEmpty) {
+          current = json.decode(content);
+        }
+      }
+      current.addAll(updates);
+      await configFile.writeAsString(json.encode(current));
+    } catch (e) {
+      print('LocalStorageService config save error: $e');
+    }
+  }
+
   /// Loads all stored messages, automatically pruning any messages older than 24 hours.
   Future<List<MessagePacket>> loadMessages() async {
     try {
-      final file = await _getFile();
+      final myDevId = await getDeviceId();
+      final file = await _getFile(_fileName);
       if (!await file.exists()) {
         return [];
       }
@@ -31,7 +145,7 @@ class LocalStorageService {
 
       final List<dynamic> jsonList = json.decode(contents);
       final allMessages = jsonList
-          .map((map) => MessagePacket.fromMap(map as Map<String, dynamic>))
+          .map((map) => MessagePacket.fromMap(map as Map<String, dynamic>, myDeviceId: myDevId))
           .toList();
 
       // 24-Hour Auto-Pruning Filter
@@ -89,7 +203,7 @@ class LocalStorageService {
 
   Future<void> _saveList(List<MessagePacket> messages) async {
     try {
-      final file = await _getFile();
+      final file = await _getFile(_fileName);
       final jsonList = messages.map((m) => m.toMap()).toList();
       await file.writeAsString(json.encode(jsonList));
     } catch (e) {

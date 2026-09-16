@@ -41,6 +41,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String _currentTranscript = '';
   String _p2pStatus = 'DISCONNECTED';
   String _connectedPeerName = '';
+  String _myDeviceId = '';
+  String _myUsername = 'User';
 
   final List<MessagePacket> _messages = [];
 
@@ -61,20 +63,138 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _meshManager = MeshManager(_bridge);
-    _loadHistoricalMessages();
+    _loadUserInfoAndMessages();
     _listenToNativeEvents();
     _sttTts.initialize();
     _gpsService.initialize();
   }
 
-  Future<void> _loadHistoricalMessages() async {
+  Future<void> _loadUserInfoAndMessages() async {
+    final devId = await _storage.getDeviceId();
+    final username = await _storage.getUsername();
+    final prefLang = await _storage.getPreferredLanguage();
+    final hasSelected = await _storage.hasSelectedLanguage();
     final storedMessages = await _storage.loadMessages();
+
     if (mounted) {
       setState(() {
+        _myDeviceId = devId;
+        _myUsername = username;
+        _selectedLanguage = prefLang;
         _messages.clear();
         _messages.addAll(storedMessages.reversed);
       });
+
+      if (!hasSelected) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _showLanguageOnboardingDialog();
+        });
+      }
     }
+  }
+
+  void _showLanguageOnboardingDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        String tempSelected = _selectedLanguage;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: const Column(
+                children: [
+                  Icon(Icons.translate, color: Colors.red, size: 40),
+                  SizedBox(height: 8),
+                  Text(
+                    'Welcome to JeevaLink',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    'Select your primary language for offline speech & translation:',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildLanguageOptionTile('en', 'English (Default)', Icons.language, tempSelected, (val) {
+                    setDialogState(() => tempSelected = val);
+                  }),
+                  _buildLanguageOptionTile('ta', 'Tamil (தமிழ்)', Icons.record_voice_over, tempSelected, (val) {
+                    setDialogState(() => tempSelected = val);
+                  }),
+                  _buildLanguageOptionTile('hi', 'Hindi (हिंदी)', Icons.record_voice_over, tempSelected, (val) {
+                    setDialogState(() => tempSelected = val);
+                  }),
+                  _buildLanguageOptionTile('te', 'Telugu (తెలుగు)', Icons.record_voice_over, tempSelected, (val) {
+                    setDialogState(() => tempSelected = val);
+                  }),
+                ],
+              ),
+              actions: [
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red.shade900,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    onPressed: () async {
+                      await _storage.savePreferredLanguage(tempSelected);
+                      if (mounted) {
+                        setState(() {
+                          _selectedLanguage = tempSelected;
+                        });
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Primary language set to ${tempSelected.toUpperCase()}')),
+                        );
+                      }
+                    },
+                    child: const Text('CONFIRM LANGUAGE', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildLanguageOptionTile(String code, String name, IconData icon, String currentSelected, ValueChanged<String> onSelect) {
+    final bool isSelected = currentSelected == code;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: isSelected ? Colors.red.shade50 : Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isSelected ? Colors.red : Colors.transparent,
+          width: 2,
+        ),
+      ),
+      child: ListTile(
+        leading: Icon(icon, color: isSelected ? Colors.red : Colors.grey),
+        title: Text(
+          name,
+          style: TextStyle(
+            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+            color: isSelected ? Colors.red.shade900 : Colors.black87,
+          ),
+        ),
+        trailing: isSelected ? const Icon(Icons.check_circle, color: Colors.red) : null,
+        onTap: () => onSelect(code),
+      ),
+    );
   }
 
   void _listenToNativeEvents() {
@@ -85,7 +205,7 @@ class _HomeScreenState extends State<HomeScreen> {
           final String rawPayload = event['payload'] ?? '';
           if (rawPayload.isNotEmpty) {
             try {
-              final packet = MessagePacket.fromJson(rawPayload);
+              final packet = MessagePacket.fromJson(rawPayload, myDeviceId: _myDeviceId);
               _meshManager.processIncomingPacket(
                 packet,
                 onNewMessage: (newPacket) {
@@ -100,7 +220,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(
-                        'Incoming ${newPacket.type} [${newPacket.id}]: "${newPacket.text}"',
+                        'Incoming ${newPacket.type} from ${newPacket.senderName}: "${newPacket.text}"',
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                       backgroundColor:
@@ -188,16 +308,26 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _onMicPressStart() async {
-    final ok = await _sttTts.startRecording();
-    if (ok) {
-      setState(() {
-        _micState = MicState.recording;
-        _currentTranscript = 'Recording audio wave... Speak now!';
-      });
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Microphone permission denied or unavailable.')),
-      );
+    final targetLocale = _sttLangCodeMap[_selectedLanguage] ?? 'en-US';
+    setState(() {
+      _micState = MicState.recording;
+      _currentTranscript = 'Listening for ${_selectedLanguage.toUpperCase()}... Speak now!';
+    });
+
+    await _sttTts.loadModelForLanguage(_selectedLanguage);
+
+    final recordOk = await _sttTts.startRecording();
+    if (!recordOk) {
+      final ok = await _bridge.startSTT(language: targetLocale);
+      if (!ok && mounted) {
+        setState(() {
+          _micState = MicState.idle;
+          _currentTranscript = 'Microphone permission denied or speech engine unavailable.';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Microphone permission denied or speech engine unavailable.')),
+        );
+      }
     }
   }
 
@@ -205,11 +335,24 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_micState == MicState.recording) {
       setState(() {
         _micState = MicState.processing;
-        _currentTranscript = 'Processing audio wave with Sherpa-ONNX...';
+        _currentTranscript = 'Decoding speech wave with Multilingual Sherpa-ONNX...';
       });
 
-      final String transcribedText = await _sttTts.stopAndTranscribe();
-      _processDecodedText(transcribedText);
+      if (_sttTts.isRecording) {
+        final String transcribedText = await _sttTts.stopAndTranscribe();
+        if (transcribedText.isNotEmpty) {
+          _processDecodedText(transcribedText);
+        } else {
+          await _bridge.stopSTT();
+          if (mounted && _micState == MicState.processing) {
+            setState(() {
+              _micState = MicState.idle;
+            });
+          }
+        }
+      } else {
+        await _bridge.stopSTT();
+      }
     }
   }
 
@@ -266,6 +409,8 @@ class _HomeScreenState extends State<HomeScreen> {
       longitude: _gpsService.currentLongitude,
       ttl: 2,
       timestamp: DateTime.now().toIso8601String(),
+      senderId: _myDeviceId,
+      senderName: _myUsername,
       isSelf: true,
     );
 
@@ -317,6 +462,70 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
     }
+  }
+
+  void _showEditUsernameDialog() async {
+    final textController = TextEditingController(text: _myUsername);
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.person, color: Colors.blue),
+              SizedBox(width: 8),
+              Text('Edit Username / Device Name'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'This device name will be shown to nearby phones on Radar and in Push Notifications.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: textController,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Your Username / Device Name',
+                  border: OutlineInputBorder(),
+                  hintText: 'e.g. Devesh, Phone A, Leader',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final newName = textController.text.trim();
+                if (newName.isNotEmpty) {
+                  await _storage.saveUsername(newName);
+                  if (mounted) {
+                    setState(() {
+                      _myUsername = newName;
+                    });
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Device name updated to "$newName"')),
+                    );
+                  }
+                }
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _confirmClearAllHistory() {
@@ -487,272 +696,287 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       children: [
         _buildP2pStatusBar(),
-        // TOP: Emergency Mode Toggle Switch & Notification Banner
-        AnimatedContainer(
-          duration: const Duration(milliseconds: 300),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          color: _isEmergencyMode ? Colors.red.shade900 : Colors.blue.shade50,
-          child: Column(
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
-                    children: [
-                      Icon(
-                        _isEmergencyMode ? Icons.warning : Icons.shield,
-                        color: _isEmergencyMode ? Colors.white : Colors.blue.shade900,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _isEmergencyMode ? 'EMERGENCY MODE ON' : 'NORMAL MODE',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                          color: _isEmergencyMode ? Colors.white : Colors.blue.shade900,
-                        ),
-                      ),
-                    ],
-                  ),
-                  Switch(
-                    value: _isEmergencyMode,
-                    activeColor: Colors.white,
-                    activeTrackColor: Colors.red.shade500,
-                    onChanged: _toggleEmergencyMode,
-                  ),
-                ],
-              ),
-              if (_isEmergencyMode) ...[
-                const SizedBox(height: 4),
-                const Text(
-                  '🚨 Emergency Notification Active: Messages broadcast as Urgent SOS',
-                  style: TextStyle(color: Colors.white70, fontSize: 11),
-                ),
-              ],
-            ],
-          ),
-        ),
-
-        // MIDDLE: Push-To-Talk Mic Button + Text Input
-        Container(
-          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.06),
-                blurRadius: 10,
-                spreadRadius: 2,
-              )
-            ],
-          ),
-          child: Column(
-            children: [
-              GestureDetector(
-                onTap: _toggleMicRecording,
-                onLongPressStart: (_) => _onMicPressStart(),
-                onLongPressEnd: (_) => _onMicPressEnd(),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  width: _micState == MicState.recording ? 110 : 90,
-                  height: _micState == MicState.recording ? 110 : 90,
-                  decoration: BoxDecoration(
-                    color: _getMicColor(),
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: _getMicColor().withOpacity(0.4),
-                        blurRadius: _micState == MicState.recording ? 20 : 10,
-                        spreadRadius: _micState == MicState.recording ? 6 : 2,
-                      )
-                    ],
-                  ),
-                  child: Icon(
-                    _micState == MicState.sent
-                        ? Icons.check
-                        : (_micState == MicState.recording ? Icons.mic : Icons.mic_none),
-                    color: Colors.white,
-                    size: 44,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                _getMicStateText(),
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 13,
-                  color: _getMicColor(),
-                ),
-              ),
-              if (_currentTranscript.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade100,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    _currentTranscript,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
-                  ),
-                ),
-              ],
-              const SizedBox(height: 12),
-              TextField(
-                controller: _textController,
-                decoration: InputDecoration(
-                  labelText: 'Speech Transcript / Text Message',
-                  border: const OutlineInputBorder(),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  suffixIcon: IconButton(
-                    icon: const Icon(Icons.send, color: Colors.blue),
-                    onPressed: _sendMessagePacket,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        // BOTTOM: Feed Header & Clear All Button
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                '24h Local Mesh Feed',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-              ),
-              if (_messages.isNotEmpty)
-                TextButton.icon(
-                  onPressed: _confirmClearAllHistory,
-                  icon: const Icon(Icons.delete_sweep, size: 18, color: Colors.red),
-                  label: const Text(
-                    'Clear All',
-                    style: TextStyle(color: Colors.red, fontSize: 12, fontWeight: FontWeight.bold),
-                  ),
-                ),
-            ],
-          ),
-        ),
-
-        // BOTTOM: Message Feed List with Animated Swipe-to-Delete
         Expanded(
-          child: _messages.isEmpty
-              ? const Center(
+          child: SingleChildScrollView(
+            child: Column(
+              children: [
+                // TOP: Emergency Mode Toggle Switch & Notification Banner
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 300),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  color: _isEmergencyMode ? Colors.red.shade900 : Colors.blue.shade50,
                   child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.history_toggle_off, size: 48, color: Colors.grey),
-                      SizedBox(height: 8),
-                      Text(
-                        'No messages in 24h history.\nHold mic to record or type text.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.grey),
-                      ),
-                    ],
-                  ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  itemCount: _messages.length,
-                  itemBuilder: (context, index) {
-                    final msg = _messages[index];
-                    return Dismissible(
-                      key: Key(msg.id),
-                      direction: DismissDirection.endToStart,
-                      background: Container(
-                        alignment: Alignment.centerRight,
-                        padding: const EdgeInsets.only(right: 20),
-                        margin: const EdgeInsets.only(bottom: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.red.shade600,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Row(
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            Text(
-                              'DELETE',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12,
-                              ),
-                            ),
-                            SizedBox(width: 8),
-                            Icon(Icons.delete_forever, color: Colors.white, size: 24),
-                          ],
-                        ),
-                      ),
-                      onDismissed: (_) => _deleteSingleMessage(msg, index),
-                      child: Card(
-                        color: msg.isEmergency
-                            ? Colors.red.shade50
-                            : Colors.grey.shade100,
-                        margin: const EdgeInsets.only(bottom: 8),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: ListTile(
-                          leading: Icon(
-                            msg.isEmergency
-                                ? Icons.warning_amber
-                                : Icons.chat_bubble_outline,
-                            color: msg.isEmergency ? Colors.red : Colors.blue,
-                          ),
-                          title: Text(
-                            msg.text,
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: msg.isEmergency
-                                  ? Colors.red.shade900
-                                  : Colors.black87,
-                            ),
-                          ),
-                          subtitle: Text(
-                            'Lang: ${msg.language.toUpperCase()} | ID: ${msg.id} | TTL: ${msg.ttl}\nTime: ${msg.timestamp.length >= 19 ? msg.timestamp.substring(11, 19) : msg.timestamp} | GPS: ${msg.latitude.toStringAsFixed(4)}, ${msg.longitude.toStringAsFixed(4)}',
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Row(
                             children: [
-                              Chip(
-                                label: Text(
-                                  msg.type,
-                                  style: const TextStyle(
-                                    fontSize: 9,
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                backgroundColor:
-                                    msg.isEmergency ? Colors.red : Colors.blue,
-                                padding: EdgeInsets.zero,
+                              Icon(
+                                _isEmergencyMode ? Icons.warning : Icons.shield,
+                                color: _isEmergencyMode ? Colors.white : Colors.blue.shade900,
                               ),
-                              IconButton(
-                                icon: const Icon(Icons.volume_up, size: 20),
-                                tooltip: 'TTS Playback',
-                                onPressed: () {
-                                  _sttTts.speak(
-                                    msg.text,
-                                    language: _sttLangCodeMap[msg.language] ?? 'en-US',
-                                  );
-                                },
+                              const SizedBox(width: 8),
+                              Text(
+                                _isEmergencyMode ? 'EMERGENCY MODE ON' : 'NORMAL MODE',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15,
+                                  color: _isEmergencyMode ? Colors.white : Colors.blue.shade900,
+                                ),
                               ),
                             ],
                           ),
+                          Switch(
+                            value: _isEmergencyMode,
+                            activeColor: Colors.white,
+                            activeTrackColor: Colors.red.shade500,
+                            onChanged: _toggleEmergencyMode,
+                          ),
+                        ],
+                      ),
+                      if (_isEmergencyMode) ...[
+                        const SizedBox(height: 4),
+                        const Text(
+                          '🚨 Emergency Notification Active: Messages broadcast as Urgent SOS',
+                          style: TextStyle(color: Colors.white70, fontSize: 11),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+
+                // MIDDLE: Push-To-Talk Mic Button + Text Input
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.06),
+                        blurRadius: 10,
+                        spreadRadius: 2,
+                      )
+                    ],
+                  ),
+                  child: Column(
+                    children: [
+                      GestureDetector(
+                        onTap: _toggleMicRecording,
+                        onLongPressStart: (_) => _onMicPressStart(),
+                        onLongPressEnd: (_) => _onMicPressEnd(),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          width: _micState == MicState.recording ? 110 : 90,
+                          height: _micState == MicState.recording ? 110 : 90,
+                          decoration: BoxDecoration(
+                            color: _getMicColor(),
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: _getMicColor().withOpacity(0.4),
+                                blurRadius: _micState == MicState.recording ? 20 : 10,
+                                spreadRadius: _micState == MicState.recording ? 6 : 2,
+                              )
+                            ],
+                          ),
+                          child: Icon(
+                            _micState == MicState.sent
+                                ? Icons.check
+                                : (_micState == MicState.recording ? Icons.mic : Icons.mic_none),
+                            color: Colors.white,
+                            size: 44,
+                          ),
                         ),
                       ),
-                    );
-                  },
+                      const SizedBox(height: 10),
+                      Text(
+                        _getMicStateText(),
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                          color: _getMicColor(),
+                        ),
+                      ),
+                      if (_currentTranscript.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            _currentTranscript,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _textController,
+                        decoration: InputDecoration(
+                          labelText: 'Speech Transcript / Text Message',
+                          border: const OutlineInputBorder(),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.send, color: Colors.blue),
+                            onPressed: _sendMessagePacket,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
+
+                // BOTTOM: Feed Header & Clear All Button
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        '24h Local Mesh Feed',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                      ),
+                      if (_messages.isNotEmpty)
+                        TextButton.icon(
+                          onPressed: _confirmClearAllHistory,
+                          icon: const Icon(Icons.delete_sweep, size: 18, color: Colors.red),
+                          label: const Text(
+                            'Clear All',
+                            style: TextStyle(color: Colors.red, fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+
+                // BOTTOM: Message Feed List
+                _messages.isEmpty
+                    ? const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 32),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.history_toggle_off, size: 48, color: Colors.grey),
+                            SizedBox(height: 8),
+                            Text(
+                              'No messages in 24h history.\nHold mic to record or type text.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        itemCount: _messages.length,
+                        itemBuilder: (context, index) {
+                          final msg = _messages[index];
+                          return Dismissible(
+                            key: Key(msg.id),
+                            direction: DismissDirection.endToStart,
+                            background: Container(
+                              alignment: Alignment.centerRight,
+                              padding: const EdgeInsets.only(right: 20),
+                              margin: const EdgeInsets.only(bottom: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.red.shade600,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  Text(
+                                    'DELETE',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                  SizedBox(width: 8),
+                                  Icon(Icons.delete_forever, color: Colors.white, size: 24),
+                                ],
+                              ),
+                            ),
+                            onDismissed: (_) => _deleteSingleMessage(msg, index),
+                            child: Card(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                side: BorderSide(
+                                  color: msg.isEmergency ? Colors.red.shade300 : Colors.grey.shade200,
+                                  width: msg.isEmergency ? 1.5 : 1,
+                                ),
+                              ),
+                              color: msg.isEmergency ? Colors.red.shade50 : Colors.white,
+                              child: ListTile(
+                                leading: Icon(
+                                  msg.isEmergency ? Icons.warning_amber_rounded : Icons.chat_bubble_outline,
+                                  color: msg.isEmergency ? Colors.red : Colors.blue,
+                                ),
+                                title: Text(
+                                  msg.text,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                    color: msg.isEmergency ? Colors.red.shade900 : Colors.black87,
+                                  ),
+                                ),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'From: ${msg.isSelf ? "You (${msg.senderName})" : msg.senderName} | Lang: ${msg.language.toUpperCase()} | TTL: ${msg.ttl}',
+                                      style: const TextStyle(fontSize: 11, color: Colors.grey),
+                                    ),
+                                    Text(
+                                      'Time: ${DateTime.tryParse(msg.timestamp)?.toLocal().toString().substring(11, 19) ?? msg.timestamp} | GPS: ${msg.latitude.toStringAsFixed(4)}, ${msg.longitude.toStringAsFixed(4)}',
+                                      style: const TextStyle(fontSize: 10, color: Colors.grey),
+                                    ),
+                                  ],
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: msg.isEmergency ? Colors.red : Colors.lightBlue,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        msg.type,
+                                        style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.volume_up, size: 20, color: Colors.black54),
+                                      onPressed: () {
+                                        _sttTts.speak(
+                                          msg.text,
+                                          language: _sttLangCodeMap[msg.language] ?? 'en-US',
+                                        );
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ],
+            ),
+          ),
         ),
       ],
     );
@@ -801,6 +1025,8 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       drawer: AppDrawer(
         selectedLanguage: _selectedLanguage,
+        username: _myUsername,
+        onEditUsername: _showEditUsernameDialog,
         onLanguageChanged: (newLang) {
           setState(() {
             _selectedLanguage = newLang;
