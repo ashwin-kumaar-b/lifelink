@@ -266,7 +266,7 @@ class _HomeScreenState extends State<HomeScreen> {
       text: textToSend,
       latitude: _gpsService.currentLatitude,
       longitude: _gpsService.currentLongitude,
-      ttl: 1,
+      ttl: 3,
       timestamp: DateTime.now().toIso8601String(),
       isSelf: true,
     );
