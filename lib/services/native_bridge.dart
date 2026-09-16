@@ -99,7 +99,7 @@ class NativeBridge {
       Future.delayed(const Duration(milliseconds: 600), () {
         _webStreamController.add({
           'type': 'MESSAGE_RECEIVED',
-          'payload': packet.toJson(),
+          'payload': packet.toDemoEncodedJson(),
         });
       });
       return true;
@@ -107,7 +107,7 @@ class NativeBridge {
     try {
       final bool result = await _channel.invokeMethod('sendMessage', {
         if (targetIp != null) 'targetIp': targetIp,
-        'jsonPayload': packet.toJson(),
+        'jsonPayload': packet.toDemoEncodedJson(),
       });
       return result;
     } catch (e) {

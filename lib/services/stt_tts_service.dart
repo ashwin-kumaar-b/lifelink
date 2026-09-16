@@ -26,6 +26,8 @@ class SttTtsService {
 
   final List<String> emergencyKeywords = [
     'emergency',
+    'its an emergency',
+    'it is an emergency',
     'floods',
     'flood',
     'disaster',

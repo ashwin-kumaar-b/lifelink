@@ -234,14 +234,16 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     if (keyword != null) {
-      _sttTts.speak('Emergency keyword $keyword detected!');
+      _sttTts.speak('Emergency keyword $keyword detected! Dispatching SOS packet.');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('🚨 EMERGENCY KEYWORD "$keyword" DETECTED! Priority set to High.'),
+          content: Text('🚨 EMERGENCY KEYWORD "$keyword" DETECTED! Auto-broadcasting SOS.'),
           backgroundColor: Colors.redAccent,
           duration: const Duration(seconds: 4),
         ),
       );
+      // Auto-dispatch existing emergency pipeline immediately
+      _sendMessagePacket();
     }
   }
 
@@ -264,7 +266,7 @@ class _HomeScreenState extends State<HomeScreen> {
       text: textToSend,
       latitude: _gpsService.currentLatitude,
       longitude: _gpsService.currentLongitude,
-      ttl: 2,
+      ttl: 1,
       timestamp: DateTime.now().toIso8601String(),
       isSelf: true,
     );

@@ -164,17 +164,19 @@ class SocketManager(
                 lastError = e.message
             }
 
-            // 2. Send TCP to known target IP / connected peers list / standard group owner IP + Subnet Scan (192.168.49.x and 192.168.43.x)
+            // 2. Send TCP strictly to single primary target IP / connected peer
             val targetIps = mutableSetOf<String>()
-            if (!targetIp.isNullOrBlank()) targetIps.add(targetIp)
-            targetIps.add("192.168.49.1") // Standard Android Wi-Fi Direct Group Owner IP
-            targetIps.add("192.168.43.1") // Standard Android Local Hotspot Gateway IP
-            targetIps.addAll(connectedPeerIps)
-
-            // Add standard Wi-Fi Direct & Hotspot DHCP Client Subnet Range (.2 -> .20)
-            for (i in 2..20) {
-                targetIps.add("192.168.49.$i")
-                targetIps.add("192.168.43.$i")
+            if (!targetIp.isNullOrBlank()) {
+                targetIps.add(targetIp)
+            } else if (connectedPeerIps.isNotEmpty()) {
+                targetIps.add(connectedPeerIps.first())
+            } else {
+                targetIps.add("192.168.49.1") // Standard Android Wi-Fi Direct Group Owner IP
+                targetIps.add("192.168.43.1") // Standard Android Local Hotspot Gateway IP
+                for (i in 2..20) {
+                    targetIps.add("192.168.49.$i")
+                    targetIps.add("192.168.43.$i")
+                }
             }
 
             val jobs = targetIps.map { ip ->

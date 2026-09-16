@@ -19,6 +19,12 @@ class MeshManager {
     MessagePacket packet, {
     required Function(MessagePacket) onNewMessage,
   }) {
+    // Version Lock Gating check
+    if (packet.appVersion != MessagePacket.currentAppVersion) {
+      print('MeshManager: Incompatible packet version [${packet.appVersion}]. Expected [${MessagePacket.currentAppVersion}]. Dropping packet.');
+      return false;
+    }
+
     if (_seenMessageIds.contains(packet.id)) {
       print('MeshManager: Duplicate message ID detected [${packet.id}]. Dropping packet silently.');
       return false;
