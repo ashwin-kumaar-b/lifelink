@@ -9,6 +9,8 @@ class MessagePacket {
   final double longitude;
   final int ttl;
   final String timestamp;
+  final String senderId;
+  final String senderName;
   final bool isSelf;
 
   MessagePacket({
@@ -20,6 +22,8 @@ class MessagePacket {
     required this.longitude,
     required this.ttl,
     required this.timestamp,
+    this.senderId = '',
+    this.senderName = 'Peer Node',
     this.isSelf = false,
   });
 
@@ -35,10 +39,15 @@ class MessagePacket {
       'longitude': longitude,
       'ttl': ttl,
       'timestamp': timestamp,
+      'senderId': senderId,
+      'senderName': senderName,
     };
   }
 
-  factory MessagePacket.fromMap(Map<String, dynamic> map) {
+  factory MessagePacket.fromMap(Map<String, dynamic> map, {String? myDeviceId}) {
+    final sId = map['senderId'] as String? ?? '';
+    final isOwn = (myDeviceId != null && myDeviceId.isNotEmpty && sId == myDeviceId);
+    final rawName = map['senderName'] as String? ?? '';
     return MessagePacket(
       id: map['id'] ?? '',
       type: map['type'] ?? 'NORMAL',
@@ -48,11 +57,14 @@ class MessagePacket {
       longitude: (map['longitude'] as num?)?.toDouble() ?? 0.0,
       ttl: (map['ttl'] as num?)?.toInt() ?? 5,
       timestamp: map['timestamp'] ?? DateTime.now().toIso8601String(),
+      senderId: sId,
+      senderName: rawName.trim().isNotEmpty ? rawName.trim() : 'Peer Node',
+      isSelf: isOwn || (map['isSelf'] == true),
     );
   }
 
   String toJson() => json.encode(toMap());
 
-  factory MessagePacket.fromJson(String source) =>
-      MessagePacket.fromMap(json.decode(source));
+  factory MessagePacket.fromJson(String source, {String? myDeviceId}) =>
+      MessagePacket.fromMap(json.decode(source) as Map<String, dynamic>, myDeviceId: myDeviceId);
 }

@@ -71,9 +71,11 @@ class MainActivity : FlutterActivity() {
         )
         wifiDirectManager?.registerReceiver()
 
+        val myDeviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "DEV_${android.os.Build.MODEL}"
+
         // Initialize Native Socket Manager
         socketManager = SocketManager(port = 8888) { jsonMessage ->
-            notificationHelper?.showNotificationFromJson(jsonMessage)
+            notificationHelper?.showNotificationFromJson(jsonMessage, myDeviceId)
             sendEvent(
                 mapOf(
                     "type" to "MESSAGE_RECEIVED",
@@ -88,7 +90,7 @@ class MainActivity : FlutterActivity() {
         bluetoothManager = BluetoothManager(
             context = this,
             onMessageReceived = { jsonMessage ->
-                notificationHelper?.showNotificationFromJson(jsonMessage)
+                notificationHelper?.showNotificationFromJson(jsonMessage, myDeviceId)
                 sendEvent(
                     mapOf(
                         "type" to "MESSAGE_RECEIVED",
@@ -187,6 +189,9 @@ class MainActivity : FlutterActivity() {
                 }
                 "getGroupOwnerIp" -> {
                     result.success(groupOwnerIp ?: "")
+                }
+                "getDeviceId" -> {
+                    result.success(myDeviceId)
                 }
                 else -> result.notImplemented()
             }

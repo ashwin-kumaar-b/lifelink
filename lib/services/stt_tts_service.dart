@@ -19,6 +19,7 @@ class SttTtsService {
   bool _isSttInitialized = false;
   bool _isTtsInitialized = false;
   bool _isRecording = false;
+  String _loadedLanguage = '';
 
   bool get isSttReady => _isSttInitialized && _sttRecognizer != null;
   bool get isTtsReady => _isTtsInitialized;
@@ -40,19 +41,86 @@ class SttTtsService {
     'cyclone',
   ];
 
-  Future<void> initialize() async {
-    if (_isSttInitialized && _isTtsInitialized) return;
-
+  Future<void> initialize({String language = 'en'}) async {
     try {
       sherpa_onnx.initBindings();
     } catch (e) {
       debugPrint('Sherpa-ONNX initBindings notice: $e');
     }
 
+    await loadModelForLanguage(language);
+
+    // Initialize Android System Native Text-To-Speech (TTS)
+    try {
+      final ttsLocale = _mapToFullLocale(language);
+      await _flutterTts.setLanguage(ttsLocale);
+      await _flutterTts.setSpeechRate(0.48);
+      await _flutterTts.setVolume(1.0);
+      await _flutterTts.setPitch(1.0);
+      _isTtsInitialized = true;
+      debugPrint('Android Native System TTS initialized with $ttsLocale');
+    } catch (e) {
+      debugPrint('Android Native TTS Init Exception: $e');
+    }
+  }
+
+  Future<bool> loadModelForLanguage(String languageCode) async {
+    final langTag = languageCode.toLowerCase().trim();
+    if (_isSttInitialized && _loadedLanguage == langTag && _sttRecognizer != null) {
+      return true;
+    }
+
     final docDir = await getApplicationDocumentsDirectory();
 
-    // 1. Copy & Initialize English STT Model (Whisper Tiny INT8)
+    // 1. Attempt to load Multilingual Whisper Base INT8 Model
     try {
+      final sttDir = Directory('${docDir.path}/models/multilingual');
+      if (!await sttDir.exists()) await sttDir.create(recursive: true);
+
+      final encoderPath = await _copyAssetToLocal(
+        'assets/models/base-encoder.int8.onnx',
+        '${sttDir.path}/base-encoder.int8.onnx',
+      );
+      final decoderPath = await _copyAssetToLocal(
+        'assets/models/base-decoder.int8.onnx',
+        '${sttDir.path}/base-decoder.int8.onnx',
+      );
+      final tokensPath = await _copyAssetToLocal(
+        'assets/models/base-tokens.txt',
+        '${sttDir.path}/base-tokens.txt',
+      );
+
+      if (encoderPath != null && decoderPath != null && tokensPath != null) {
+        final sttConfig = sherpa_onnx.OfflineRecognizerConfig(
+          model: sherpa_onnx.OfflineModelConfig(
+            whisper: sherpa_onnx.OfflineWhisperModelConfig(
+              encoder: encoderPath,
+              decoder: decoderPath,
+              language: langTag, // 'ta', 'te', 'en', 'hi', etc.
+              task: 'transcribe',
+            ),
+            tokens: tokensPath,
+            numThreads: 2,
+            debug: false,
+          ),
+        );
+        _sttRecognizer = sherpa_onnx.OfflineRecognizer(sttConfig);
+        _isSttInitialized = true;
+        _loadedLanguage = langTag;
+        debugPrint('Sherpa-ONNX Multilingual STT Model loaded successfully for [$langTag]!');
+        return true;
+      }
+    } catch (e) {
+      debugPrint('Sherpa-ONNX Multilingual STT Load Error: $e');
+    }
+
+    // 2. Fallback to English Model if Multilingual asset is missing
+    return await _loadEnglishFallbackModel();
+  }
+
+  Future<bool> _loadEnglishFallbackModel() async {
+    try {
+      final docDir = await getApplicationDocumentsDirectory();
       final sttDir = Directory('${docDir.path}/models/english');
       if (!await sttDir.exists()) await sttDir.create(recursive: true);
 
@@ -85,32 +153,26 @@ class SttTtsService {
         );
         _sttRecognizer = sherpa_onnx.OfflineRecognizer(sttConfig);
         _isSttInitialized = true;
-        debugPrint('Sherpa-ONNX English STT Engine initialized successfully!');
+        _loadedLanguage = 'en';
+        debugPrint('Sherpa-ONNX English Fallback STT Engine loaded.');
+        return true;
       }
     } catch (e) {
-      debugPrint('Sherpa-ONNX STT Init Exception: $e');
+      debugPrint('English fallback load exception: $e');
     }
-
-    // 2. Initialize Android System Native Text-To-Speech (TTS)
-    try {
-      await _flutterTts.setLanguage('en-US');
-      await _flutterTts.setSpeechRate(0.48);
-      await _flutterTts.setVolume(1.0);
-      await _flutterTts.setPitch(1.0);
-      _isTtsInitialized = true;
-      debugPrint('Android Native System TTS initialized successfully!');
-    } catch (e) {
-      debugPrint('Android Native TTS Init Exception: $e');
-    }
+    return false;
   }
 
   Future<String?> _copyAssetToLocal(String assetPath, String localPath) async {
     try {
       final file = File(localPath);
-      if (await file.exists() && await file.length() > 0) {
+      final data = await rootBundle.load(assetPath);
+      final int assetLength = data.lengthInBytes;
+
+      if (await file.exists() && await file.length() == assetLength) {
         return localPath;
       }
-      final data = await rootBundle.load(assetPath);
+
       await file.writeAsBytes(
         data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
         flush: true,
@@ -161,18 +223,53 @@ class SttTtsService {
 
       final wave = sherpa_onnx.readWave(wavPath);
       final Float32List samples = _resampleTo16k(wave.samples, wave.sampleRate);
+      final Float32List cleanSamples = _trimSilence(samples);
 
       final stream = _sttRecognizer!.createStream();
-      stream.acceptWaveform(samples: samples, sampleRate: 16000);
+      stream.acceptWaveform(samples: cleanSamples, sampleRate: 16000);
       _sttRecognizer!.decode(stream);
       final result = _sttRecognizer!.getResult(stream);
 
-      return result.text.trim();
+      final rawText = result.text.trim();
+      final sanitizedText = _cleanTranscriptForLanguage(rawText, _loadedLanguage);
+      return sanitizedText;
     } catch (e) {
       debugPrint('STT Decoding Error: $e');
       _isRecording = false;
       return '';
     }
+  }
+
+  Float32List _trimSilence(Float32List samples, {double threshold = 0.012}) {
+    if (samples.isEmpty) return samples;
+    int start = 0;
+    while (start < samples.length && samples[start].abs() < threshold) {
+      start++;
+    }
+    int end = samples.length - 1;
+    while (end > start && samples[end].abs() < threshold) {
+      end--;
+    }
+
+    if (start >= end) return samples;
+
+    final paddedStart = (start - 800).clamp(0, samples.length);
+    final paddedEnd = (end + 800).clamp(0, samples.length);
+
+    return samples.sublist(paddedStart, paddedEnd);
+  }
+
+  String _cleanTranscriptForLanguage(String rawText, String languageCode) {
+    if (rawText.isEmpty) return rawText;
+
+    // Filter out hallucinated Arabic/Persian/Urdu (\u0600-\u06FF) & Cyrillic/CJK BPE tokens
+    String cleaned = rawText.replaceAll(
+      RegExp(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u0400-\u04FF\u4E00-\u9FFF]'),
+      '',
+    );
+
+    cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return cleaned;
   }
 
   Float32List _resampleTo16k(Float32List inputSamples, int inputRate) {
@@ -198,14 +295,12 @@ class SttTtsService {
     final lowerText = text.toLowerCase().replaceAll(RegExp(r'[^\w\s]'), '');
     final words = lowerText.split(RegExp(r'\s+'));
 
-    // 1. Exact or Substring match
     for (final kw in emergencyKeywords) {
       if (lowerText.contains(kw)) {
         return kw.toUpperCase();
       }
     }
 
-    // 2. Fuzzy Stem / Levenshtein Distance match (<= 2)
     for (final word in words) {
       if (word.length < 3) continue;
       for (final kw in emergencyKeywords) {
@@ -244,10 +339,46 @@ class SttTtsService {
     if (text.isEmpty) return;
     try {
       await _flutterTts.stop();
-      await _flutterTts.setLanguage(language);
+      final targetLocale = _mapToFullLocale(language);
+      await _flutterTts.setLanguage(targetLocale);
       await _flutterTts.speak(text);
     } catch (e) {
       debugPrint('TTS Speak Error: $e');
+    }
+  }
+
+  String _mapToFullLocale(String lang) {
+    switch (lang.toLowerCase()) {
+      case 'ta':
+      case 'ta-in':
+        return 'ta-IN';
+      case 'te':
+      case 'te-in':
+        return 'te-IN';
+      case 'hi':
+      case 'hi-in':
+        return 'hi-IN';
+      case 'kn':
+      case 'kn-in':
+        return 'kn-IN';
+      case 'ml':
+      case 'ml-in':
+        return 'ml-IN';
+      case 'bn':
+      case 'bn-in':
+        return 'bn-IN';
+      case 'mr':
+      case 'mr-in':
+        return 'mr-IN';
+      case 'gu':
+      case 'gu-in':
+        return 'gu-IN';
+      case 'en':
+      case 'en-us':
+      case 'en-in':
+        return 'en-US';
+      default:
+        return lang.contains('-') ? lang : '$lang-IN';
     }
   }
 

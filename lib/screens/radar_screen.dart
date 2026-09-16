@@ -104,9 +104,9 @@ class _RadarScreenState extends State<RadarScreen>
         bearing = ((hash % 360) * pi) / 180.0;
       }
 
-      final String displayName = msg.id.startsWith('NODE-')
-          ? msg.id
-          : 'Sender';
+      final String displayName = (msg.senderName.isNotEmpty && msg.senderName != 'Peer Node')
+          ? msg.senderName
+          : (msg.id.startsWith('NODE-') ? msg.id : 'Peer Node');
 
       allNodes.add(
         RadarNode(

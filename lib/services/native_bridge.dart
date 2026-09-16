@@ -172,4 +172,15 @@ class NativeBridge {
       return '';
     }
   }
+
+  Future<String> getDeviceId() async {
+    if (kIsWeb) return 'WEB_DEV_NODE';
+    try {
+      final String id = await _channel.invokeMethod('getDeviceId');
+      return id;
+    } catch (e) {
+      print('NativeBridge getDeviceId error: $e');
+      return 'DEV_UNKNOWN';
+    }
+  }
 }

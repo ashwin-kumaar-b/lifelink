@@ -139,26 +139,39 @@ class SocketManager(
             var sentAny = false
             var lastError: String? = null
 
-            // 1. Send UDP Subnet Broadcast
+            // 1. Send UDP Subnet Broadcast across ALL active Network Interfaces (P2P, Hotspot, WLAN)
             try {
-                val broadcastAddresses = listOf(
-                    InetAddress.getByName("255.255.255.255"),
-                    InetAddress.getByName("192.168.49.255"),
-                    InetAddress.getByName("192.168.43.255")
-                )
                 val bytes = (jsonPayload + "\n").toByteArray(Charsets.UTF_8)
-                val sendSocket = DatagramSocket().apply { broadcast = true }
+                val targetBroadcastIps = mutableSetOf<String>()
+                targetBroadcastIps.add("255.255.255.255")
+                targetBroadcastIps.add("192.168.49.255")
+                targetBroadcastIps.add("192.168.43.255")
 
-                for (addr in broadcastAddresses) {
-                    try {
-                        val packet = DatagramPacket(bytes, bytes.size, addr, port)
-                        sendSocket.send(packet)
-                        sentAny = true
-                    } catch (e: Exception) {
-                        Log.w(tag, "UDP send to $addr failed: ${e.message}")
+                val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+                while (interfaces != null && interfaces.hasMoreElements()) {
+                    val netIf = interfaces.nextElement()
+                    if (netIf.isLoopback || !netIf.isUp) continue
+                    for (addrInfo in netIf.interfaceAddresses) {
+                        val broadcastAddr = addrInfo.broadcast
+                        if (broadcastAddr != null && broadcastAddr.hostAddress != null) {
+                            targetBroadcastIps.add(broadcastAddr.hostAddress)
+                        }
                     }
                 }
-                sendSocket.close()
+
+                DatagramSocket().use { socket ->
+                    socket.broadcast = true
+                    for (bIp in targetBroadcastIps) {
+                        try {
+                            val packet = DatagramPacket(bytes, bytes.size, InetAddress.getByName(bIp), port)
+                            socket.send(packet)
+                            sentAny = true
+                            Log.d(tag, "Sent UDP broadcast -> $bIp")
+                        } catch (e: Exception) {
+                            Log.w(tag, "UDP broadcast to $bIp failed: ${e.message}")
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(tag, "UDP broadcast error", e)
                 lastError = e.message
@@ -171,8 +184,8 @@ class SocketManager(
             targetIps.add("192.168.43.1") // Standard Android Local Hotspot Gateway IP
             targetIps.addAll(connectedPeerIps)
 
-            // Add standard Wi-Fi Direct & Hotspot DHCP Client Subnet Range (.2 -> .20)
-            for (i in 2..20) {
+            // Add standard Wi-Fi Direct & Hotspot DHCP Client Subnet Range (.2 -> .50)
+            for (i in 2..50) {
                 targetIps.add("192.168.49.$i")
                 targetIps.add("192.168.43.$i")
             }

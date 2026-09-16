@@ -7,12 +7,16 @@ class AppDrawer extends StatelessWidget {
   final String selectedLanguage;
   final ValueChanged<String> onLanguageChanged;
   final String currentRoute;
+  final String username;
+  final VoidCallback? onEditUsername;
 
   const AppDrawer({
     super.key,
     required this.selectedLanguage,
     required this.onLanguageChanged,
     required this.currentRoute,
+    this.username = 'User',
+    this.onEditUsername,
   });
 
   static final Map<String, String> languages = {
@@ -34,16 +38,32 @@ class AppDrawer extends StatelessWidget {
       child: SafeArea(
         child: Column(
           children: [
-            // Drawer Header
+            // Drawer Header with Username & Edit Action
             UserAccountsDrawerHeader(
               decoration: BoxDecoration(
                 color: Colors.red.shade900,
               ),
-              accountName: const Text(
-                'JeevaLink P2P Mesh',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              accountName: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      username,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (onEditUsername != null)
+                    IconButton(
+                      icon: const Icon(Icons.edit, color: Colors.white, size: 20),
+                      tooltip: 'Edit Username',
+                      onPressed: () {
+                        Navigator.pop(context);
+                        onEditUsername!();
+                      },
+                    ),
+                ],
               ),
-              accountEmail: const Text('Offline Emergency Relay'),
+              accountEmail: const Text('Offline JeevaLink Node'),
               currentAccountPicture: const CircleAvatar(
                 backgroundColor: Colors.white,
                 child: Icon(Icons.wifi_tethering, color: Colors.red, size: 36),

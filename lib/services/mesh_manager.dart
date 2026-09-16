@@ -50,6 +50,8 @@ class MeshManager {
         longitude: packet.longitude,
         ttl: remainingTtl,
         timestamp: packet.timestamp,
+        senderId: packet.senderId,
+        senderName: packet.senderName,
         isSelf: false,
       );
 
