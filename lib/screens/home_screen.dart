@@ -9,7 +9,9 @@ import '../services/local_storage_service.dart';
 import '../services/mesh_manager.dart';
 import '../services/native_bridge.dart';
 import '../services/stt_tts_service.dart';
+import '../utils/gps_calculator.dart';
 import '../widgets/app_drawer.dart';
+
 import 'radar_screen.dart';
 
 enum MicState { idle, recording, processing, sent }
@@ -21,8 +23,12 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
   final NativeBridge _bridge = NativeBridge();
+
   final SttTtsService _sttTts = SttTtsService();
   final GpsService _gpsService = GpsService();
   final LocalStorageService _storage = LocalStorageService();
@@ -43,8 +49,10 @@ class _HomeScreenState extends State<HomeScreen> {
   String _connectedPeerName = '';
   String _myDeviceId = '';
   String _myUsername = 'User';
+  int _configuredTtl = 3;
 
   final List<MessagePacket> _messages = [];
+
 
   final Map<String, String> _sttLangCodeMap = {
     'en': 'en-US',
@@ -73,6 +81,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final devId = await _storage.getDeviceId();
     final username = await _storage.getUsername();
     final prefLang = await _storage.getPreferredLanguage();
+    final prefTtl = await _storage.getPreferredTtl();
     final hasSelected = await _storage.hasSelectedLanguage();
     final storedMessages = await _storage.loadMessages();
 
@@ -81,9 +90,11 @@ class _HomeScreenState extends State<HomeScreen> {
         _myDeviceId = devId;
         _myUsername = username;
         _selectedLanguage = prefLang;
+        _configuredTtl = prefTtl;
         _messages.clear();
         _messages.addAll(storedMessages.reversed);
       });
+
 
       if (!hasSelected) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -407,8 +418,9 @@ class _HomeScreenState extends State<HomeScreen> {
       text: textToSend,
       latitude: _gpsService.currentLatitude,
       longitude: _gpsService.currentLongitude,
-      ttl: 2,
+      ttl: _configuredTtl,
       timestamp: DateTime.now().toIso8601String(),
+
       senderId: _myDeviceId,
       senderName: _myUsername,
       isSelf: true,
@@ -528,7 +540,146 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void _showMessageDetailDialog(MessagePacket msg) {
+    final distMeters = GpsCalculator.calculateDistanceMeters(
+      _gpsService.currentLatitude,
+      _gpsService.currentLongitude,
+      msg.latitude,
+      msg.longitude,
+    );
+    final formattedDist = GpsCalculator.formatDistance(distMeters);
+
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Message Details',
+      barrierColor: Colors.black.withOpacity(0.6),
+      transitionDuration: const Duration(milliseconds: 550),
+      transitionBuilder: (context, anim1, anim2, child) {
+        return FadeTransition(
+          opacity: CurvedAnimation(parent: anim1, curve: Curves.easeInOut),
+          child: ScaleTransition(
+            scale: CurvedAnimation(parent: anim1, curve: Curves.easeOutCubic),
+            child: child,
+          ),
+        );
+      },
+      pageBuilder: (context, anim1, anim2) {
+        return Dialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Padding(
+            padding: const EdgeInsets.all(20.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: msg.isEmergency ? Colors.red.shade100 : Colors.blue.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        msg.isEmergency ? '🚨 EMERGENCY SOS' : '💬 NORMAL MESH MSG',
+                        style: TextStyle(
+                          color: msg.isEmergency ? Colors.red.shade900 : Colors.blue.shade900,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.grey),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  msg.isSelf ? 'You (${msg.senderName})' : msg.senderName,
+                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black87),
+                ),
+                Text(
+                  'Sender Node: ${msg.senderId.isNotEmpty ? msg.senderId : msg.id}',
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: msg.isEmergency ? Colors.red.shade50 : Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: msg.isEmergency ? Colors.red.shade200 : Colors.grey.shade300,
+                    ),
+                  ),
+                  child: Text(
+                    '"${msg.text}"',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: msg.isEmergency ? Colors.red.shade900 : Colors.black87,
+                      height: 1.3,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _buildMetadataRow(Icons.access_time_rounded, 'Received Time', DateTime.tryParse(msg.timestamp)?.toLocal().toString().substring(11, 19) ?? msg.timestamp),
+                _buildMetadataRow(Icons.location_on_rounded, 'GPS Coordinates', '${msg.latitude.toStringAsFixed(4)}, ${msg.longitude.toStringAsFixed(4)} ($formattedDist away)'),
+                _buildMetadataRow(Icons.alt_route_rounded, 'Multi-Hop Propagation', '${msg.ttl} Hops remaining'),
+                _buildMetadataRow(Icons.translate_rounded, 'Language Payload', msg.language.toUpperCase()),
+                const SizedBox(height: 18),
+                SizedBox(
+                  width: double.infinity,
+                  height: 46,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: msg.isEmergency ? Colors.red.shade700 : Colors.blue.shade700,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    onPressed: () {
+                      _sttTts.speak(msg.text, language: _sttLangCodeMap[msg.language] ?? 'en-US');
+                    },
+                    icon: const Icon(Icons.volume_up_rounded, size: 20),
+                    label: const Text('Read Message Aloud', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildMetadataRow(IconData icon, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: Colors.blue.shade700),
+          const SizedBox(width: 8),
+          Text('$label: ', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.black54)),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: Colors.black87),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _confirmClearAllHistory() {
+
     HapticFeedback.heavyImpact();
     SystemSound.play(SystemSoundType.alert);
     showDialog(
@@ -918,7 +1069,9 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                               color: msg.isEmergency ? Colors.red.shade50 : Colors.white,
                               child: ListTile(
+                                onTap: () => _showMessageDetailDialog(msg),
                                 leading: Icon(
+
                                   msg.isEmergency ? Icons.warning_amber_rounded : Icons.chat_bubble_outline,
                                   color: msg.isEmergency ? Colors.red : Colors.blue,
                                 ),
@@ -984,86 +1137,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_currentTabIndex == 0 ? 'JeevaLink PTT Chat' : 'Nearby Radar Map'),
-        centerTitle: true,
-        actions: [
-          ElevatedButton.icon(
-            onPressed: () {
-              setState(() {
-                _currentTabIndex = _currentTabIndex == 1 ? 0 : 1;
-              });
-            },
-            icon: Icon(
-              _currentTabIndex == 1 ? Icons.forum : Icons.radar,
-              color: _currentTabIndex == 1 ? Colors.blue : Colors.green,
-              size: 20,
-            ),
-            label: Text(
-              _currentTabIndex == 1 ? 'CHAT' : 'RADAR',
-              style: TextStyle(
-                color: _currentTabIndex == 1 ? Colors.blue : Colors.green,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _currentTabIndex == 1 ? Colors.blue.shade50 : Colors.green.shade50,
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Chip(
-            label: Text(
-              _selectedLanguage.toUpperCase(),
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-            ),
-            backgroundColor: Colors.red.shade100,
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      drawer: AppDrawer(
-        selectedLanguage: _selectedLanguage,
-        username: _myUsername,
-        onEditUsername: _showEditUsernameDialog,
-        onLanguageChanged: (newLang) {
-          setState(() {
-            _selectedLanguage = newLang;
-          });
-        },
-        currentRoute: _currentTabIndex == 0 ? 'home' : 'radar',
-      ),
-      body: IndexedStack(
-        index: _currentTabIndex,
-        children: [
-          _buildMainPttView(),
-          RadarScreen(
-            selectedLanguage: _selectedLanguage,
-            messages: _messages,
-          ),
-        ],
-      ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentTabIndex,
-        selectedItemColor: Colors.red.shade900,
-        unselectedItemColor: Colors.grey,
-        onTap: (index) {
-          setState(() {
-            _currentTabIndex = index;
-          });
-        },
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.forum),
-            label: 'PTT Dashboard',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.radar),
-            label: 'Nearby Radar Map',
-          ),
-        ],
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: _buildMainPttView(),
       ),
     );
   }
 }
+

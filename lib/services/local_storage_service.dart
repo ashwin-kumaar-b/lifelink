@@ -115,6 +115,26 @@ class LocalStorageService {
     });
   }
 
+  Future<int> getPreferredTtl() async {
+    final configFile = await _getFile(_userConfigFile);
+    if (await configFile.exists()) {
+      try {
+        final Map<String, dynamic> data = json.decode(await configFile.readAsString());
+        if (data['preferredTtl'] != null) {
+          return (data['preferredTtl'] as num).toInt();
+        }
+      } catch (_) {}
+    }
+    return 3; // Default 3 hops
+  }
+
+  Future<void> savePreferredTtl(int ttl) async {
+    await _updateConfig({
+      'preferredTtl': ttl,
+    });
+  }
+
+
   Future<void> _updateConfig(Map<String, dynamic> updates) async {
     try {
       final configFile = await _getFile(_userConfigFile);

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'screens/home_screen.dart';
+import 'screens/main_navigation_screen.dart';
 import 'services/stt_tts_service.dart';
 
 void main() async {
@@ -72,7 +72,7 @@ class _PermissionWrapperState extends State<PermissionWrapper> {
   @override
   Widget build(BuildContext context) {
     if (_isGranted) {
-      return const HomeScreen();
+      return const MainNavigationScreen();
     }
 
     return Scaffold(
