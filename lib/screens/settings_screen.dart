@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/local_storage_service.dart';
+import '../services/native_bridge.dart';
 
 class SettingsScreen extends StatefulWidget {
   final String selectedLanguage;
@@ -448,8 +449,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
               icon: Icons.wifi_tethering_rounded,
               iconBgColor: Colors.teal.shade500,
               title: 'Off-Grid Transports',
-              subtitle: 'Wi-Fi Direct & Bluetooth RFCOMM Active',
+              subtitle: 'Wi-Fi Direct TCP (8888) & Bluetooth RFCOMM',
               onTap: _showTransportsSheet,
+            ),
+            _buildDivider(),
+
+            _buildSettingsItem(
+              icon: Icons.battery_saver_rounded,
+              iconBgColor: Colors.indigo.shade500,
+              title: 'Background Mesh Execution',
+              subtitle: 'Screen-Off Listening Active • Request Battery Saver Exemption',
+              onTap: () async {
+                final bridge = NativeBridge();
+                await bridge.startBackgroundService();
+                await bridge.requestBatteryOptimizationExemption();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('⚡ JeevaLink Foreground Service & Battery Exemption active.'),
+                      backgroundColor: Colors.indigo,
+                    ),
+                  );
+                }
+              },
             ),
             _buildDivider(),
 

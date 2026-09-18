@@ -193,8 +193,67 @@ class MainActivity : FlutterActivity() {
                 "getDeviceId" -> {
                     result.success(myDeviceId)
                 }
+                "startBackgroundService" -> {
+                    startJeevaLinkBackgroundService()
+                    result.success(true)
+                }
+                "stopBackgroundService" -> {
+                    stopJeevaLinkBackgroundService()
+                    result.success(true)
+                }
+                "requestBatteryExemption" -> {
+                    requestBatteryOptimizationExemption()
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
+        }
+
+        // Auto-start foreground background service on app startup
+        startJeevaLinkBackgroundService()
+    }
+
+    private fun startJeevaLinkBackgroundService() {
+        try {
+            val intent = android.content.Intent(this, JeevaLinkForegroundService::class.java).apply {
+                action = JeevaLinkForegroundService.ACTION_START
+            }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun stopJeevaLinkBackgroundService() {
+        try {
+            val intent = android.content.Intent(this, JeevaLinkForegroundService::class.java).apply {
+                action = JeevaLinkForegroundService.ACTION_STOP
+            }
+            startService(intent)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                val powerManager = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+                val pkgName = packageName
+                if (!powerManager.isIgnoringBatteryOptimizations(pkgName)) {
+                    val intent = android.content.Intent().apply {
+                        action = android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                        data = android.net.Uri.parse("package:$pkgName")
+                    }
+                    startActivity(intent)
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
