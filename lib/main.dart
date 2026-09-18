@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'screens/main_navigation_screen.dart';
+import 'services/native_bridge.dart';
 import 'services/stt_tts_service.dart';
 
 void main() async {
@@ -36,6 +37,7 @@ class PermissionWrapper extends StatefulWidget {
 class _PermissionWrapperState extends State<PermissionWrapper> {
   bool _isGranted = false;
   String _statusText = 'Checking permissions...';
+  final NativeBridge _bridge = NativeBridge();
 
   @override
   void initState() {
@@ -59,6 +61,11 @@ class _PermissionWrapperState extends State<PermissionWrapper> {
         allOk = false;
       }
     });
+
+    if (allOk) {
+      await _bridge.startBackgroundService();
+      await _bridge.requestBatteryOptimizationExemption();
+    }
 
     setState(() {
       _isGranted = allOk;

@@ -183,4 +183,37 @@ class NativeBridge {
       return 'DEV_UNKNOWN';
     }
   }
+
+  Future<bool> startBackgroundService() async {
+    if (kIsWeb) return true;
+    try {
+      final bool result = await _channel.invokeMethod('startBackgroundService');
+      return result;
+    } catch (e) {
+      print('NativeBridge startBackgroundService error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> stopBackgroundService() async {
+    if (kIsWeb) return true;
+    try {
+      final bool result = await _channel.invokeMethod('stopBackgroundService');
+      return result;
+    } catch (e) {
+      print('NativeBridge stopBackgroundService error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> requestBatteryOptimizationExemption() async {
+    if (kIsWeb) return true;
+    try {
+      final bool result = await _channel.invokeMethod('requestBatteryExemption');
+      return result;
+    } catch (e) {
+      print('NativeBridge requestBatteryOptimizationExemption error: $e');
+      return false;
+    }
+  }
 }
