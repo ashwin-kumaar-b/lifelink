@@ -76,13 +76,14 @@ class _EmergencyPanicScreenState extends State<EmergencyPanicScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.red.shade900,
+      backgroundColor: Colors.red.shade600,
       appBar: AppBar(
         title: const Text(
           'PANIC SOS BROADCAST',
           style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
         ),
-        backgroundColor: Colors.red.shade900,
+        backgroundColor: Colors.red.shade600,
+
         iconTheme: const IconThemeData(color: Colors.white),
         centerTitle: true,
       ),
