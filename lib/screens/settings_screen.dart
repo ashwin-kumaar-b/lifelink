@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../services/local_storage_service.dart';
+import '../services/model_downloader_service.dart';
 import '../services/native_bridge.dart';
+import '../services/stt_tts_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   final String selectedLanguage;
@@ -28,6 +30,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   final Map<String, String> _languages = {
     'en': 'English',
+    'te': 'తెలుగు (Telugu)',
     'ta': 'தமிழ் (Tamil)',
     'hi': 'हिन्दी (Hindi)',
   };
@@ -42,6 +45,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadUserDataAndStats() async {
     final devId = await _storage.getDeviceId();
     final username = await _storage.getUsername();
+    final prefLang = await _storage.getPreferredLanguage();
     final prefTtl = await _storage.getPreferredTtl();
     final messages = await _storage.loadMessages();
 
@@ -49,6 +53,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() {
         _myDeviceId = devId;
         _currentUsername = username;
+        _currentLanguage = prefLang;
         _currentTtl = prefTtl;
         _storedMessageCount = messages.length;
       });
@@ -173,19 +178,213 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 trailing: isSelected ? const Icon(Icons.check_circle, color: Colors.green) : null,
-                onTap: () {
-                  setState(() {
-                    _currentLanguage = entry.key;
-                  });
-                  _storage.savePreferredLanguage(entry.key);
-                  widget.onLanguageChanged?.call(entry.key);
+                onTap: () async {
                   Navigator.pop(ctx);
+                  if (entry.key == _currentLanguage) return;
+
+                  await Future.delayed(const Duration(milliseconds: 250));
+
+                  final downloader = ModelDownloaderService();
+                  final bool isDownloaded = await downloader.isModelDownloaded(entry.key);
+
+                  if (entry.key == 'en' || isDownloaded) {
+                    _switchLanguageWithLoading(entry.key, entry.value);
+                  } else {
+                    _downloadLanguageFromSettings(entry.key);
+                  }
                 },
               );
             }),
           ],
         ),
       ),
+    );
+  }
+
+  Future<void> _switchLanguageWithLoading(String langKey, String langName) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (loadingCtx) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          content: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 8.0),
+            child: Row(
+              children: [
+                const CircularProgressIndicator(
+                  strokeWidth: 3,
+                  color: Colors.green,
+                ),
+                const SizedBox(width: 20),
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Activating $langName...',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Loading speech model into RAM...',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    // Frame delay to allow Flutter to paint the dialog before native C++ model loading
+    await Future.delayed(const Duration(milliseconds: 50));
+
+    final bool success = await SttTtsService().loadModelForLanguage(langKey);
+    await _storage.savePreferredLanguage(langKey);
+
+    if (mounted) {
+      setState(() {
+        _currentLanguage = langKey;
+      });
+      widget.onLanguageChanged?.call(langKey);
+
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            success
+                ? 'Activated $langName Speech Engine!'
+                : 'Failed to initialize $langName. Defaulted to English.',
+          ),
+          backgroundColor: success ? Colors.green.shade800 : Colors.redAccent,
+        ),
+      );
+    }
+  }
+
+  Future<void> _downloadLanguageFromSettings(String lang) async {
+    final downloader = ModelDownloaderService();
+    final langName = _languages[lang] ?? lang.toUpperCase();
+    double progress = 0.0;
+    String statusText = 'Starting download...';
+    bool isDownloading = true;
+    bool isActivating = false;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (downloadCtx) {
+        return StatefulBuilder(
+          builder: (context, setProgressState) {
+            if (isDownloading && progress == 0.0 && !isActivating) {
+              downloader.downloadLanguageModel(
+                lang,
+                onProgress: (rx, total, pct) {
+                  if (downloadCtx.mounted) {
+                    setProgressState(() {
+                      progress = pct;
+                      final rxMb = (rx / (1024 * 1024)).toStringAsFixed(1);
+                      final totalMb = (total / (1024 * 1024)).toStringAsFixed(1);
+                      statusText = 'Downloading $langName: $rxMb MB / $totalMb MB (${(pct * 100).toStringAsFixed(0)}%)';
+                    });
+                  }
+                },
+              ).then((success) async {
+                isDownloading = false;
+                if (success) {
+                  if (downloadCtx.mounted) {
+                    setProgressState(() {
+                      isActivating = true;
+                      statusText = 'Activating $langName Speech Engine...';
+                    });
+                  }
+                  await Future.delayed(const Duration(milliseconds: 50));
+                  await SttTtsService().loadModelForLanguage(lang);
+                  await _storage.savePreferredLanguage(lang);
+
+                  if (mounted) {
+                    setState(() {
+                      _currentLanguage = lang;
+                    });
+                    widget.onLanguageChanged?.call(lang);
+                    if (downloadCtx.mounted) Navigator.pop(downloadCtx);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Downloaded & activated $langName Speech Engine!'),
+                        backgroundColor: Colors.green.shade800,
+                      ),
+                    );
+                  }
+                } else {
+                  if (downloadCtx.mounted) {
+                    setProgressState(() {
+                      statusText = 'Download failed. Check connection or retry.';
+                    });
+                  }
+                }
+              });
+            }
+
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Row(
+                children: [
+                  Icon(
+                    isActivating ? Icons.memory : Icons.cloud_download,
+                    color: Colors.blueAccent,
+                    size: 28,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      isActivating ? 'Activating $langName Engine' : 'Downloading $langName Model',
+                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  LinearProgressIndicator(
+                    value: isActivating ? null : (progress > 0 ? progress : null),
+                    backgroundColor: Colors.grey.shade800,
+                    color: Colors.greenAccent,
+                    minHeight: 10,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    statusText,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12, color: Colors.white70),
+                  ),
+                ],
+              ),
+              actions: [
+                if (!isActivating)
+                  TextButton(
+                    onPressed: () {
+                      if (downloadCtx.mounted) Navigator.pop(downloadCtx);
+                    },
+                    child: const Text('CANCEL', style: TextStyle(color: Colors.orangeAccent)),
+                  ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
