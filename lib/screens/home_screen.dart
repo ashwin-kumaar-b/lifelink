@@ -19,10 +19,18 @@ enum MicState { idle, recording, processing, sent }
 
 class HomeScreen extends StatefulWidget {
   final String selectedLanguage;
+  final List<MessagePacket> messages;
+  final Function(MessagePacket)? onMessageSent;
+  final Function(String)? onMessageDeleted;
+  final VoidCallback? onAllMessagesCleared;
 
   const HomeScreen({
     super.key,
     this.selectedLanguage = 'en',
+    this.messages = const [],
+    this.onMessageSent,
+    this.onMessageDeleted,
+    this.onAllMessagesCleared,
   });
 
   @override
@@ -58,6 +66,19 @@ class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMi
   int _configuredTtl = 3;
 
   final List<MessagePacket> _messages = [];
+
+  List<MessagePacket> get displayMessages {
+    final Map<String, MessagePacket> map = {};
+    for (var m in widget.messages) {
+      map[m.id] = m;
+    }
+    for (var m in _messages) {
+      map[m.id] = m;
+    }
+    final list = map.values.toList();
+    list.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    return list;
+  }
 
 
   final Map<String, String> _sttLangCodeMap = {
@@ -578,16 +599,18 @@ class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMi
       return;
     }
 
-    // Trigger background GPS location update (non-blocking)
-    _gpsService.getFreshBestPosition();
+    // Fetch immediate high-precision fresh hardware GPS fix right before sending
+    final pos = await _gpsService.getFreshBestPosition();
+    final double lat = pos?.latitude ?? _gpsService.currentLatitude;
+    final double lon = pos?.longitude ?? _gpsService.currentLongitude;
 
     final packet = MessagePacket(
       id: 'MSG-${_uuid.v4().substring(0, 6).toUpperCase()}',
       type: _isEmergencyMode ? 'EMERGENCY' : 'NORMAL',
       language: _selectedLanguage,
       text: textToSend,
-      latitude: _gpsService.currentLatitude,
-      longitude: _gpsService.currentLongitude,
+      latitude: lat,
+      longitude: lon,
       ttl: _configuredTtl,
       timestamp: DateTime.now().toIso8601String(),
 
@@ -598,9 +621,11 @@ class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMi
 
     _meshManager.registerSentMessage(packet);
     await _bridge.sendMessage(packet);
+    widget.onMessageSent?.call(packet);
 
     setState(() {
       _micState = MicState.sent;
+      _messages.removeWhere((m) => m.id == packet.id);
       _messages.insert(0, packet);
       _textController.clear();
       _currentTranscript = '';
@@ -619,6 +644,7 @@ class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMi
     HapticFeedback.mediumImpact();
     SystemSound.play(SystemSoundType.click);
     await _storage.deleteMessage(msg.id);
+    widget.onMessageDeleted?.call(msg.id);
 
     setState(() {
       _messages.removeWhere((m) => m.id == msg.id);
@@ -635,6 +661,7 @@ class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMi
             onPressed: () async {
               SystemSound.play(SystemSoundType.click);
               await _storage.saveMessage(msg);
+              widget.onMessageSent?.call(msg);
               setState(() {
                 _messages.insert(originalIndex.clamp(0, _messages.length), msg);
               });
@@ -884,6 +911,7 @@ class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMi
               HapticFeedback.vibrate();
               _playWhooshSound();
               await _storage.clearAll();
+              widget.onAllMessagesCleared?.call();
               setState(() {
                 _messages.clear();
               });
@@ -1163,7 +1191,7 @@ class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMi
                         '24h Local Mesh Feed',
                         style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                       ),
-                      if (_messages.isNotEmpty)
+                      if (displayMessages.isNotEmpty)
                         TextButton.icon(
                           onPressed: _confirmClearAllHistory,
                           icon: const Icon(Icons.delete_sweep, size: 18, color: Colors.red),
@@ -1177,7 +1205,7 @@ class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMi
                 ),
 
                 // BOTTOM: Message Feed List
-                _messages.isEmpty
+                displayMessages.isEmpty
                     ? const Padding(
                         padding: EdgeInsets.symmetric(vertical: 32),
                         child: Column(
@@ -1197,9 +1225,9 @@ class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMi
                         shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
                         padding: const EdgeInsets.symmetric(horizontal: 16),
-                        itemCount: _messages.length,
+                        itemCount: displayMessages.length,
                         itemBuilder: (context, index) {
-                          final msg = _messages[index];
+                          final msg = displayMessages[index];
                           return Dismissible(
                             key: Key(msg.id),
                             direction: DismissDirection.endToStart,

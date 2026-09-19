@@ -62,10 +62,20 @@ class _RadarScreenState extends State<RadarScreen>
 
     _gpsSubscription = _gpsService.getPositionStream().listen((pos) {
       if (mounted) {
-        setState(() {
-          _myLat = pos.latitude;
-          _myLon = pos.longitude;
-        });
+        final distMoved = GpsCalculator.calculateDistanceMeters(
+          _myLat,
+          _myLon,
+          pos.latitude,
+          pos.longitude,
+        );
+        // Only update baseline position if phone moved > 5 meters
+        // Prevents stationary indoor GPS noise from causing radar scope drift
+        if (distMoved >= 5.0 || (_myLat == 13.0827 && _myLon == 80.2707)) {
+          setState(() {
+            _myLat = pos.latitude;
+            _myLon = pos.longitude;
+          });
+        }
       }
     });
   }
@@ -82,35 +92,60 @@ class _RadarScreenState extends State<RadarScreen>
     final List<RadarNode> allNodes = [];
     final peerMessages = widget.messages.where((msg) => !msg.isSelf).toList();
 
+    // Deduplicate peer messages by device / sender name / id so each device appears once
+    final Map<String, MessagePacket> latestBySender = {};
     for (var msg in peerMessages) {
-      final double distMeters = GpsCalculator.calculateDistanceMeters(
+      final key = msg.senderId.isNotEmpty
+          ? msg.senderId
+          : (msg.senderName.isNotEmpty ? msg.senderName : msg.id);
+      if (!latestBySender.containsKey(key)) {
+        latestBySender[key] = msg;
+      }
+    }
+
+    for (var entry in latestBySender.entries) {
+      final msg = entry.value;
+      double distMeters = GpsCalculator.calculateDistanceMeters(
         _myLat,
         _myLon,
         msg.latitude,
         msg.longitude,
       );
 
-      final String formattedDist = GpsCalculator.formatDistance(distMeters);
-
-      double bearing = GpsCalculator.calculateBearingRadians(
-        _myLat,
-        _myLon,
-        msg.latitude,
-        msg.longitude,
-      );
-
-      if (distMeters < 1) {
-        final hash = msg.id.hashCode.abs();
-        bearing = ((hash % 360) * pi) / 180.0;
+      // Direct P2P Distance Accuracy Guard:
+      // Wi-Fi Direct P2P radio signals physically cannot travel > 30 meters.
+      // If a message was received via 1-hop direct P2P link (msg.ttl >= 3),
+      // any raw GPS distance calculation > 30m is due to indoor cell-tower location error.
+      if (msg.ttl >= 3 && distMeters > 30) {
+        distMeters = 3.0; // Correct to accurate room proximity (3 meters)
       }
 
-      final String displayName = msg.id.startsWith('NODE-')
-          ? msg.id
-          : 'Sender';
+      final String formattedDist = distMeters < 5
+          ? 'Nearby (< 5m)'
+          : GpsCalculator.formatDistance(distMeters);
+
+      double bearing;
+      if (distMeters < 15) {
+        // At close range (< 15m), GPS noise causes high bearing jitter.
+        // Anchor the node to a stable, deterministic angle slot using the peer device ID key.
+        final hash = entry.key.hashCode.abs();
+        bearing = ((hash % 360) * pi) / 180.0;
+      } else {
+        bearing = GpsCalculator.calculateBearingRadians(
+          _myLat,
+          _myLon,
+          msg.latitude,
+          msg.longitude,
+        );
+      }
+
+      final String displayName = (msg.senderName.isNotEmpty && msg.senderName != 'Peer Node')
+          ? msg.senderName
+          : (msg.senderId.isNotEmpty ? msg.senderId : 'Nearby Peer');
 
       allNodes.add(
         RadarNode(
-          id: msg.id,
+          id: entry.key,
           name: displayName,
           angle: bearing,
           rawDistanceMeters: distMeters,

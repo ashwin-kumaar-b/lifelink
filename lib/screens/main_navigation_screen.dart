@@ -1,5 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import '../models/message_packet.dart';
 import '../services/local_storage_service.dart';
+import '../services/mesh_manager.dart';
+import '../services/native_bridge.dart';
+import '../services/stt_tts_service.dart';
 import 'emergency_panic_screen.dart';
 import 'home_screen.dart';
 import 'radar_screen.dart';
@@ -22,12 +27,69 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   int _currentIndex = 1; // Default landing index: 1 (Home Page)
   late String _currentLanguage;
 
+  final NativeBridge _bridge = NativeBridge();
+  final LocalStorageService _storage = LocalStorageService();
+  final SttTtsService _sttTts = SttTtsService();
+  late final MeshManager _meshManager;
+
+  StreamSubscription? _eventSubscription;
+  final List<MessagePacket> _messages = [];
+  String _myDeviceId = '';
+
   @override
   void initState() {
     super.initState();
     _currentLanguage = widget.selectedLanguage;
     _pageController = PageController(initialPage: _currentIndex);
+    _meshManager = MeshManager(_bridge);
+
+    _sttTts.initialize();
     _loadSavedLanguage();
+    _initCentralizedMesh();
+  }
+
+  Future<void> _initCentralizedMesh() async {
+    final devId = await _storage.getDeviceId();
+    final storedMessages = await _storage.loadMessages();
+
+    if (mounted) {
+      setState(() {
+        _myDeviceId = devId;
+        _messages.clear();
+        _messages.addAll(storedMessages.reversed);
+      });
+    }
+
+    _eventSubscription = _bridge.eventStream.listen((event) {
+      final String type = event['type'] ?? '';
+      if (type == 'MESSAGE_RECEIVED') {
+        final String rawPayload = event['payload'] ?? '';
+        if (rawPayload.isNotEmpty) {
+          try {
+            final packet = MessagePacket.fromJson(rawPayload, myDeviceId: _myDeviceId);
+            _meshManager.processIncomingPacket(
+              packet,
+              onNewMessage: (newPacket) {
+                if (mounted) {
+                  setState(() {
+                    _messages.removeWhere((m) => m.id == newPacket.id);
+                    _messages.insert(0, newPacket);
+                  });
+                }
+                if (!newPacket.isSelf && newPacket.text.isNotEmpty) {
+                  _sttTts.speak(
+                    newPacket.text,
+                    language: newPacket.language,
+                  );
+                }
+              },
+            );
+          } catch (e) {
+            print('MainNavigationScreen incoming packet error: $e');
+          }
+        }
+      }
+    });
   }
 
   Future<void> _loadSavedLanguage() async {
@@ -41,6 +103,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 
   @override
   void dispose() {
+    _eventSubscription?.cancel();
     _pageController.dispose();
     super.dispose();
   }
@@ -100,10 +163,38 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           EmergencyPanicScreen(selectedLanguage: _currentLanguage),
 
           // Tab 1: Home Page
-          HomeScreen(selectedLanguage: _currentLanguage),
+          HomeScreen(
+            selectedLanguage: _currentLanguage,
+            messages: _messages,
+            onMessageSent: (sentPacket) {
+              if (mounted) {
+                setState(() {
+                  _messages.removeWhere((m) => m.id == sentPacket.id);
+                  _messages.insert(0, sentPacket);
+                });
+              }
+            },
+            onMessageDeleted: (deletedId) {
+              if (mounted) {
+                setState(() {
+                  _messages.removeWhere((m) => m.id == deletedId);
+                });
+              }
+            },
+            onAllMessagesCleared: () {
+              if (mounted) {
+                setState(() {
+                  _messages.clear();
+                });
+              }
+            },
+          ),
 
           // Tab 2: Radar + Nearby Phones Screen
-          RadarScreen(selectedLanguage: _currentLanguage),
+          RadarScreen(
+            selectedLanguage: _currentLanguage,
+            messages: _messages,
+          ),
 
           // Tab 3: Settings Screen
           SettingsScreen(
