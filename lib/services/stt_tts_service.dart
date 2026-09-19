@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 import 'package:record/record.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'local_storage_service.dart';
 
 class SttTtsService {
   static final SttTtsService _instance = SttTtsService._internal();
@@ -19,9 +20,11 @@ class SttTtsService {
   bool _isSttInitialized = false;
   bool _isTtsInitialized = false;
   bool _isRecording = false;
+  bool _isSttLoading = false;
   String _loadedLanguage = '';
 
   bool get isSttReady => _isSttInitialized && _sttRecognizer != null;
+  bool get isSttLoading => _isSttLoading;
   bool get isTtsReady => _isTtsInitialized;
   bool get isRecording => _isRecording;
 
@@ -41,18 +44,19 @@ class SttTtsService {
     'cyclone',
   ];
 
-  Future<void> initialize({String language = 'en'}) async {
+  Future<void> initialize({String? language}) async {
     try {
       sherpa_onnx.initBindings();
     } catch (e) {
       debugPrint('Sherpa-ONNX initBindings notice: $e');
     }
 
-    await loadModelForLanguage(language);
+    final targetLang = language ?? await LocalStorageService().getPreferredLanguage();
+    await loadModelForLanguage(targetLang);
 
     // Initialize Android System Native Text-To-Speech (TTS)
     try {
-      final ttsLocale = _mapToFullLocale(language);
+      final ttsLocale = _mapToFullLocale(targetLang);
       await _flutterTts.setLanguage(ttsLocale);
       await _flutterTts.setSpeechRate(0.48);
       await _flutterTts.setVolume(1.0);
@@ -70,34 +74,120 @@ class SttTtsService {
       return true;
     }
 
-    final docDir = await getApplicationDocumentsDirectory();
-
-    // 1. Attempt to load Multilingual Whisper Base INT8 Model
+    _isSttLoading = true;
     try {
-      final sttDir = Directory('${docDir.path}/models/multilingual');
+      // Free previous recognizer instance if switching to a new language
+      if (_sttRecognizer != null && _loadedLanguage != langTag) {
+        debugPrint('Freeing previous STT Recognizer instance [$_loadedLanguage] before loading [$langTag]...');
+        try {
+          _sttRecognizer?.free();
+        } catch (e) {
+          debugPrint('Error freeing previous STT recognizer: $e');
+        }
+        _sttRecognizer = null;
+        _isSttInitialized = false;
+      }
+
+      // 0. Dedicated Single-File CTC Models (Telugu, Hindi, Tamil, English)
+      if (langTag == 'te' || langTag == 'hi' || langTag == 'ta' || langTag == 'en') {
+        final success = await _loadNativeIndicModel(langTag);
+        if (success) return true;
+      }
+
+      final docDir = await getApplicationDocumentsDirectory();
+
+      // 1. Attempt to load Multilingual Whisper Base INT8 Model
+      try {
+        final sttDir = Directory('${docDir.path}/models/multilingual');
+        if (!await sttDir.exists()) await sttDir.create(recursive: true);
+
+        final encoderPath = await _copyAssetToLocal(
+          'assets/models/base-encoder.int8.onnx',
+          '${sttDir.path}/base-encoder.int8.onnx',
+        );
+        final decoderPath = await _copyAssetToLocal(
+          'assets/models/base-decoder.int8.onnx',
+          '${sttDir.path}/base-decoder.int8.onnx',
+        );
+        final tokensPath = await _copyAssetToLocal(
+          'assets/models/base-tokens.txt',
+          '${sttDir.path}/base-tokens.txt',
+        );
+
+        if (encoderPath != null && decoderPath != null && tokensPath != null) {
+          final sttConfig = sherpa_onnx.OfflineRecognizerConfig(
+            model: sherpa_onnx.OfflineModelConfig(
+              whisper: sherpa_onnx.OfflineWhisperModelConfig(
+                encoder: encoderPath,
+                decoder: decoderPath,
+                language: langTag, // 'ta', 'te', 'en', 'hi', etc.
+                task: 'transcribe',
+              ),
+              tokens: tokensPath,
+              numThreads: 2,
+              debug: false,
+            ),
+          );
+          _sttRecognizer = sherpa_onnx.OfflineRecognizer(sttConfig);
+          _isSttInitialized = true;
+          _loadedLanguage = langTag;
+          debugPrint('Sherpa-ONNX Multilingual STT Model loaded successfully for [$langTag]!');
+          return true;
+        }
+      } catch (e) {
+        debugPrint('Sherpa-ONNX Multilingual STT Load Error: $e');
+      }
+
+      // 2. Fallback to English Model if Multilingual asset is missing
+      return await _loadEnglishFallbackModel();
+    } finally {
+      _isSttLoading = false;
+    }
+  }
+
+  Future<bool> _loadNativeIndicModel(String lang) async {
+    try {
+      final langNameMap = {'te': 'telugu', 'hi': 'hindi', 'ta': 'tamil', 'en': 'english'};
+      final fullLang = langNameMap[lang] ?? lang;
+
+      final docDir = await getApplicationDocumentsDirectory();
+      final sttDir = Directory('${docDir.path}/models/$fullLang');
       if (!await sttDir.exists()) await sttDir.create(recursive: true);
 
-      final encoderPath = await _copyAssetToLocal(
-        'assets/models/base-encoder.int8.onnx',
-        '${sttDir.path}/base-encoder.int8.onnx',
-      );
-      final decoderPath = await _copyAssetToLocal(
-        'assets/models/base-decoder.int8.onnx',
-        '${sttDir.path}/base-decoder.int8.onnx',
-      );
-      final tokensPath = await _copyAssetToLocal(
-        'assets/models/base-tokens.txt',
-        '${sttDir.path}/base-tokens.txt',
-      );
+      String? modelPath;
+      String? tokensPath;
 
-      if (encoderPath != null && decoderPath != null && tokensPath != null) {
+      final localNamedFile = File('${sttDir.path}/${fullLang}_model.int8.onnx');
+      final localModelFile = File('${sttDir.path}/model.int8.onnx');
+      final localTokensFile = File('${sttDir.path}/tokens.txt');
+
+      if (await localNamedFile.exists() && await localTokensFile.exists()) {
+        modelPath = localNamedFile.path;
+        tokensPath = localTokensFile.path;
+        debugPrint('Using downloaded native [$lang] model [${localNamedFile.path}] from local storage.');
+      } else if (await localModelFile.exists() && await localTokensFile.exists()) {
+        modelPath = localModelFile.path;
+        tokensPath = localTokensFile.path;
+        debugPrint('Using downloaded native [$lang] model from local storage.');
+      } else {
+        modelPath = await _copyAssetToLocal(
+          'assets/models/$fullLang/${fullLang}_model.int8.onnx',
+          '${sttDir.path}/${fullLang}_model.int8.onnx',
+        ) ?? await _copyAssetToLocal(
+          'assets/models/$fullLang/model.int8.onnx',
+          '${sttDir.path}/model.int8.onnx',
+        );
+        tokensPath = await _copyAssetToLocal(
+          'assets/models/$fullLang/tokens.txt',
+          '${sttDir.path}/tokens.txt',
+        );
+      }
+
+      if (modelPath != null && tokensPath != null) {
         final sttConfig = sherpa_onnx.OfflineRecognizerConfig(
           model: sherpa_onnx.OfflineModelConfig(
-            whisper: sherpa_onnx.OfflineWhisperModelConfig(
-              encoder: encoderPath,
-              decoder: decoderPath,
-              language: langTag, // 'ta', 'te', 'en', 'hi', etc.
-              task: 'transcribe',
+            nemoCtc: sherpa_onnx.OfflineNemoEncDecCtcModelConfig(
+              model: modelPath,
             ),
             tokens: tokensPath,
             numThreads: 2,
@@ -106,16 +196,14 @@ class SttTtsService {
         );
         _sttRecognizer = sherpa_onnx.OfflineRecognizer(sttConfig);
         _isSttInitialized = true;
-        _loadedLanguage = langTag;
-        debugPrint('Sherpa-ONNX Multilingual STT Model loaded successfully for [$langTag]!');
+        _loadedLanguage = lang;
+        debugPrint('Sherpa-ONNX Dedicated Native [$lang] IndicConformer STT Model loaded successfully!');
         return true;
       }
     } catch (e) {
-      debugPrint('Sherpa-ONNX Multilingual STT Load Error: $e');
+      debugPrint('Sherpa-ONNX Dedicated [$lang] STT Load Error: $e');
     }
-
-    // 2. Fallback to English Model if Multilingual asset is missing
-    return await _loadEnglishFallbackModel();
+    return false;
   }
 
   Future<bool> _loadEnglishFallbackModel() async {
@@ -124,27 +212,20 @@ class SttTtsService {
       final sttDir = Directory('${docDir.path}/models/english');
       if (!await sttDir.exists()) await sttDir.create(recursive: true);
 
-      final encoderPath = await _copyAssetToLocal(
-        'assets/models/english/tiny.en-encoder.int8.onnx',
-        '${sttDir.path}/encoder.onnx',
-      );
-      final decoderPath = await _copyAssetToLocal(
-        'assets/models/english/tiny.en-decoder.int8.onnx',
-        '${sttDir.path}/decoder.onnx',
+      final modelPath = await _copyAssetToLocal(
+        'assets/models/english/model.int8.onnx',
+        '${sttDir.path}/model.int8.onnx',
       );
       final tokensPath = await _copyAssetToLocal(
-        'assets/models/english/tiny.en-tokens.txt',
+        'assets/models/english/tokens.txt',
         '${sttDir.path}/tokens.txt',
       );
 
-      if (encoderPath != null && decoderPath != null && tokensPath != null) {
+      if (modelPath != null && tokensPath != null) {
         final sttConfig = sherpa_onnx.OfflineRecognizerConfig(
           model: sherpa_onnx.OfflineModelConfig(
-            whisper: sherpa_onnx.OfflineWhisperModelConfig(
-              encoder: encoderPath,
-              decoder: decoderPath,
-              language: 'en',
-              task: 'transcribe',
+            nemoCtc: sherpa_onnx.OfflineNemoEncDecCtcModelConfig(
+              model: modelPath,
             ),
             tokens: tokensPath,
             numThreads: 2,
@@ -154,7 +235,7 @@ class SttTtsService {
         _sttRecognizer = sherpa_onnx.OfflineRecognizer(sttConfig);
         _isSttInitialized = true;
         _loadedLanguage = 'en';
-        debugPrint('Sherpa-ONNX English Fallback STT Engine loaded.');
+        debugPrint('Sherpa-ONNX English Pre-Installed Single-File CTC Model loaded successfully!');
         return true;
       }
     } catch (e) {

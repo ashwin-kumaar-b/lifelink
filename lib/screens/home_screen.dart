@@ -7,6 +7,7 @@ import '../models/message_packet.dart';
 import '../services/gps_service.dart';
 import '../services/local_storage_service.dart';
 import '../services/mesh_manager.dart';
+import '../services/model_downloader_service.dart';
 import '../services/native_bridge.dart';
 import '../services/stt_tts_service.dart';
 import '../utils/gps_calculator.dart';
@@ -17,7 +18,12 @@ import 'radar_screen.dart';
 enum MicState { idle, recording, processing, sent }
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final String selectedLanguage;
+
+  const HomeScreen({
+    super.key,
+    this.selectedLanguage = 'en',
+  });
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -134,44 +140,188 @@ class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMi
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _buildLanguageOptionTile('en', 'English (Default)', Icons.language, tempSelected, (val) {
+                  _buildLanguageOptionTile('en', 'English (Default Pre-Installed)', Icons.language, tempSelected, (val) {
                     setDialogState(() => tempSelected = val);
                   }),
-                  _buildLanguageOptionTile('ta', 'Tamil (தமிழ்)', Icons.record_voice_over, tempSelected, (val) {
+                  _buildLanguageOptionTile('te', 'Telugu (తెలుగు - ~198 MB)', Icons.record_voice_over, tempSelected, (val) {
                     setDialogState(() => tempSelected = val);
                   }),
-                  _buildLanguageOptionTile('hi', 'Hindi (हिंदी)', Icons.record_voice_over, tempSelected, (val) {
+                  _buildLanguageOptionTile('hi', 'Hindi (हिंदी - ~220 MB)', Icons.record_voice_over, tempSelected, (val) {
                     setDialogState(() => tempSelected = val);
                   }),
-                  _buildLanguageOptionTile('te', 'Telugu (తెలుగు)', Icons.record_voice_over, tempSelected, (val) {
+                  _buildLanguageOptionTile('ta', 'Tamil (தமிழ் - ~180 MB)', Icons.record_voice_over, tempSelected, (val) {
                     setDialogState(() => tempSelected = val);
                   }),
                 ],
               ),
               actions: [
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red.shade900,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red.shade900,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                        onPressed: () {
+                          _confirmAndDownloadLanguageModel(tempSelected, context);
+                        },
+                        child: const Text('CONFIRM & CONTINUE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                      ),
                     ),
-                    onPressed: () async {
-                      await _storage.savePreferredLanguage(tempSelected);
-                      if (mounted) {
-                        setState(() {
-                          _selectedLanguage = tempSelected;
-                        });
-                        Navigator.pop(context);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Primary language set to ${tempSelected.toUpperCase()}')),
-                        );
-                      }
-                    },
-                    child: const Text('CONFIRM LANGUAGE', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 6),
+                    SizedBox(
+                      width: double.infinity,
+                      child: TextButton(
+                        onPressed: () async {
+                          await _storage.savePreferredLanguage('en');
+                          if (mounted) {
+                            setState(() {
+                              _selectedLanguage = 'en';
+                            });
+                            Navigator.pop(context);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Skipped native language setup. Defaulted to English.')),
+                            );
+                          }
+                        },
+                        child: const Text('SKIP (USE DEFAULT ENGLISH)', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w600)),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _confirmAndDownloadLanguageModel(String selectedLang, BuildContext dialogContext) async {
+    final downloader = ModelDownloaderService();
+    final bool isAlreadyDownloaded = await downloader.isModelDownloaded(selectedLang);
+
+    if (selectedLang == 'en' || isAlreadyDownloaded) {
+      await _storage.savePreferredLanguage(selectedLang);
+      await _sttTts.loadModelForLanguage(selectedLang);
+      if (mounted) {
+        setState(() {
+          _selectedLanguage = selectedLang;
+        });
+        Navigator.pop(dialogContext);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Primary language set to ${selectedLang.toUpperCase()}')),
+        );
+      }
+      return;
+    }
+
+    if (!mounted) return;
+    double progress = 0.0;
+    String statusText = 'Starting download from GitHub Releases...';
+    int receivedBytes = 0;
+    int totalBytes = 0;
+    bool isDownloading = true;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (downloadCtx) {
+        return StatefulBuilder(
+          builder: (context, setProgressState) {
+            if (isDownloading && progress == 0.0) {
+              downloader.downloadLanguageModel(
+                selectedLang,
+                onProgress: (rx, total, pct) {
+                  if (downloadCtx.mounted) {
+                    setProgressState(() {
+                      receivedBytes = rx;
+                      totalBytes = total;
+                      progress = pct;
+                      final rxMb = (rx / (1024 * 1024)).toStringAsFixed(1);
+                      final totalMb = (total / (1024 * 1024)).toStringAsFixed(1);
+                      statusText = 'Downloading ${selectedLang.toUpperCase()} model: $rxMb MB / $totalMb MB (${(pct * 100).toStringAsFixed(0)}%)';
+                    });
+                  }
+                },
+              ).then((success) async {
+                isDownloading = false;
+                if (success) {
+                  await _storage.savePreferredLanguage(selectedLang);
+                  await _sttTts.loadModelForLanguage(selectedLang);
+                  if (mounted) {
+                    setState(() {
+                      _selectedLanguage = selectedLang;
+                    });
+                    if (downloadCtx.mounted) Navigator.pop(downloadCtx);
+                    if (dialogContext.mounted) Navigator.pop(dialogContext);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Downloaded & initialized ${selectedLang.toUpperCase()} model!')),
+                    );
+                  }
+                } else {
+                  if (downloadCtx.mounted) {
+                    setProgressState(() {
+                      statusText = 'Download failed. Check internet connection or retry.';
+                    });
+                  }
+                }
+              });
+            }
+
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Row(
+                children: [
+                  const Icon(Icons.cloud_download, color: Colors.blueAccent, size: 28),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Downloading ${selectedLang.toUpperCase()} Model',
+                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                    ),
                   ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  LinearProgressIndicator(
+                    value: progress > 0 ? progress : null,
+                    backgroundColor: Colors.grey.shade800,
+                    color: Colors.greenAccent,
+                    minHeight: 10,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    statusText,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12, color: Colors.white70),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () async {
+                    await _storage.savePreferredLanguage('en');
+                    if (mounted) {
+                      setState(() {
+                        _selectedLanguage = 'en';
+                      });
+                      if (downloadCtx.mounted) Navigator.pop(downloadCtx);
+                      if (dialogContext.mounted) Navigator.pop(dialogContext);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Skipped download. Defaulted to English.')),
+                      );
+                    }
+                  },
+                  child: const Text('SKIP (USE ENGLISH)', style: TextStyle(color: Colors.orangeAccent)),
                 ),
               ],
             );
@@ -268,6 +418,7 @@ class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMi
           break;
         case 'PEER_CONNECTED':
         case 'PEER_DISCOVERED':
+        case 'PEERS_DISCOVERED':
           final String peerName = event['peerName'] ?? 'New Peer';
           if (mounted) {
             setState(() {
@@ -319,13 +470,32 @@ class _HomeScreenState extends State<HomeScreen> with AutomaticKeepAliveClientMi
   }
 
   void _onMicPressStart() async {
+    final freshLang = await _storage.getPreferredLanguage();
+    _selectedLanguage = freshLang;
+
+    if (_sttTts.isSttLoading) {
+      setState(() {
+        _currentTranscript = 'Initializing ${_selectedLanguage.toUpperCase()} engine... Please wait a moment';
+      });
+    }
+
     final targetLocale = _sttLangCodeMap[_selectedLanguage] ?? 'en-US';
     setState(() {
       _micState = MicState.recording;
       _currentTranscript = 'Listening for ${_selectedLanguage.toUpperCase()}... Speak now!';
     });
 
-    await _sttTts.loadModelForLanguage(_selectedLanguage);
+    final bool isLoaded = await _sttTts.loadModelForLanguage(_selectedLanguage);
+    if (!isLoaded && mounted) {
+      setState(() {
+        _micState = MicState.idle;
+        _currentTranscript = 'Failed to load ${_selectedLanguage.toUpperCase()} speech model.';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load ${_selectedLanguage.toUpperCase()} model.')),
+      );
+      return;
+    }
 
     final recordOk = await _sttTts.startRecording();
     if (!recordOk) {

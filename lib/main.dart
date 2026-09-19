@@ -1,17 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'screens/main_navigation_screen.dart';
+import 'services/local_storage_service.dart';
 import 'services/native_bridge.dart';
 import 'services/stt_tts_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await SttTtsService().initialize();
-  runApp(const JeevaLinkApp());
+  final savedLang = await LocalStorageService().getPreferredLanguage();
+  await SttTtsService().initialize(language: savedLang);
+  runApp(JeevaLinkApp(initialLanguage: savedLang));
 }
 
 class JeevaLinkApp extends StatelessWidget {
-  const JeevaLinkApp({super.key});
+  final String initialLanguage;
+
+  const JeevaLinkApp({
+    super.key,
+    this.initialLanguage = 'en',
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -22,13 +29,18 @@ class JeevaLinkApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.red),
         useMaterial3: true,
       ),
-      home: const PermissionWrapper(),
+      home: PermissionWrapper(initialLanguage: initialLanguage),
     );
   }
 }
 
 class PermissionWrapper extends StatefulWidget {
-  const PermissionWrapper({super.key});
+  final String initialLanguage;
+
+  const PermissionWrapper({
+    super.key,
+    this.initialLanguage = 'en',
+  });
 
   @override
   State<PermissionWrapper> createState() => _PermissionWrapperState();
@@ -79,7 +91,7 @@ class _PermissionWrapperState extends State<PermissionWrapper> {
   @override
   Widget build(BuildContext context) {
     if (_isGranted) {
-      return const MainNavigationScreen();
+      return MainNavigationScreen(selectedLanguage: widget.initialLanguage);
     }
 
     return Scaffold(

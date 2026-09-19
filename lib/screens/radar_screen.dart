@@ -5,6 +5,7 @@ import '../models/message_packet.dart';
 import '../services/gps_service.dart';
 import '../services/native_bridge.dart';
 import '../utils/gps_calculator.dart';
+import '../widgets/app_drawer.dart';
 
 class RadarScreen extends StatefulWidget {
   final String selectedLanguage;
@@ -21,12 +22,8 @@ class RadarScreen extends StatefulWidget {
 }
 
 class _RadarScreenState extends State<RadarScreen>
-    with SingleTickerProviderStateMixin, AutomaticKeepAliveClientMixin {
-  @override
-  bool get wantKeepAlive => true;
-
+    with SingleTickerProviderStateMixin {
   late AnimationController _sweepController;
-
   final NativeBridge _bridge = NativeBridge();
   final GpsService _gpsService = GpsService();
   StreamSubscription? _gpsSubscription;
@@ -39,7 +36,6 @@ class _RadarScreenState extends State<RadarScreen>
 
   RadarNode? _selectedNode;
   String? _trackedNodeId; // ID of the phone being single-tracked
-  int _viewMode = 0; // 0 = Radar Scope, 1 = Nearby Phones List View
 
   @override
   void initState() {
@@ -108,9 +104,9 @@ class _RadarScreenState extends State<RadarScreen>
         bearing = ((hash % 360) * pi) / 180.0;
       }
 
-      final String displayName = (msg.senderName.isNotEmpty && msg.senderName != 'Peer Node')
-          ? msg.senderName
-          : (msg.id.startsWith('NODE-') ? msg.id : 'Peer Node');
+      final String displayName = msg.id.startsWith('NODE-')
+          ? msg.id
+          : 'Sender';
 
       allNodes.add(
         RadarNode(
@@ -118,7 +114,7 @@ class _RadarScreenState extends State<RadarScreen>
           name: displayName,
           angle: bearing,
           rawDistanceMeters: distMeters,
-          distanceFactor: 0.5,
+          distanceFactor: 0.5, // Will be scaled below
           distanceText: formattedDist,
           lastMessage: msg.text,
           isEmergency: msg.isEmergency,
@@ -131,13 +127,14 @@ class _RadarScreenState extends State<RadarScreen>
     }
 
     // Determine max distance for dynamic auto-scaling
-    double maxDist = 100.0;
+    double maxDist = 100.0; // Default minimum 100 meters
     for (var node in allNodes) {
       if (node.rawDistanceMeters > maxDist) {
         maxDist = node.rawDistanceMeters;
       }
     }
 
+    // Round up maxDist to neat scale boundary (e.g. 100m, 500m, 1km, 5km)
     double scaleMaxMeters = 100.0;
     if (maxDist > 100 && maxDist <= 500) {
       scaleMaxMeters = 500.0;
@@ -149,6 +146,7 @@ class _RadarScreenState extends State<RadarScreen>
       scaleMaxMeters = maxDist * 1.1;
     }
 
+    // Apply distance factor scaling (0.15 to 0.95 relative to scaleMaxMeters)
     final scaledNodes = allNodes.map((n) {
       final factor = min(0.95, max(0.15, n.rawDistanceMeters / scaleMaxMeters));
       return n.copyWith(distanceFactor: factor);
@@ -163,12 +161,11 @@ class _RadarScreenState extends State<RadarScreen>
 
   @override
   Widget build(BuildContext context) {
-    super.build(context);
     final scaledData = _getScaledRadarNodes();
-
     final List<RadarNode> allNodes = scaledData['nodes'] as List<RadarNode>;
     final String scaleText = scaledData['scaleText'] as String;
 
+    // Filter nodes if single-target tracking mode is active
     final List<RadarNode> displayedNodes = _trackedNodeId == null
         ? allNodes
         : allNodes.where((n) => n.id == _trackedNodeId).toList();
@@ -195,48 +192,7 @@ class _RadarScreenState extends State<RadarScreen>
       color: Colors.grey.shade900,
       child: Column(
         children: [
-          // Segmented Button Toggle: Radar Scope vs Nearby Phones
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: const Color(0xFF0A0A0A),
-            child: Row(
-              children: [
-                Expanded(
-                  child: SegmentedButton<int>(
-                    segments: const [
-                      ButtonSegment<int>(
-                        value: 0,
-                        label: Text('Radar Scope', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                        icon: Icon(Icons.radar, size: 18),
-                      ),
-                      ButtonSegment<int>(
-                        value: 1,
-                        label: Text('Nearby Phones', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                        icon: Icon(Icons.devices_other, size: 18),
-                      ),
-                    ],
-                    selected: {_viewMode},
-                    onSelectionChanged: (Set<int> newSelection) {
-                      setState(() {
-                        _viewMode = newSelection.first;
-                      });
-                    },
-                    style: ButtonStyle(
-                      backgroundColor: WidgetStateProperty.resolveWith<Color?>((states) {
-                        if (states.contains(WidgetState.selected)) {
-                          return Colors.green.shade800;
-                        }
-                        return Colors.grey.shade900;
-                      }),
-                      foregroundColor: WidgetStateProperty.all(Colors.white),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // Header Sub-Bar
+          // Sleek Sub-Header for Radar Controls & Scale Status
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             color: Colors.black,
@@ -250,7 +206,7 @@ class _RadarScreenState extends State<RadarScreen>
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    _trackedNodeId == null ? 'Radar (Scale: $scaleText)' : 'Tracking Target Phone',
+                    _trackedNodeId == null ? 'Radar (Auto-Scale: $scaleText)' : 'Tracking Target Phone',
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
@@ -262,7 +218,7 @@ class _RadarScreenState extends State<RadarScreen>
                   TextButton.icon(
                     onPressed: () {
                       setState(() {
-                        _trackedNodeId = null;
+                        _trackedNodeId = null; // Exit tracking mode
                       });
                     },
                     icon: const Icon(Icons.close, color: Colors.white, size: 16),
@@ -306,9 +262,8 @@ class _RadarScreenState extends State<RadarScreen>
               ],
             ),
           ),
-
-          // Active Single-Target Tracking Mode Banner
-          if (_trackedNodeId != null && trackedNode != null)
+          // Single-Target Tracking Mode Active Banner
+          if (_trackedNodeId != null && trackedNode != null) ...[
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               color: Colors.red.shade900,
@@ -342,479 +297,324 @@ class _RadarScreenState extends State<RadarScreen>
                 ],
               ),
             ),
+          ],
 
-          // Mode 0: Radar Scope View vs Mode 1: Nearby Phones List View
-          Expanded(
-            child: _viewMode == 0
-                ? _buildRadarScopeView(displayedNodes, scaleText)
-                : _buildNearbyPhonesListView(displayedNodes),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildRadarScopeView(List<RadarNode> displayedNodes, String scaleText) {
-    return Column(
-      children: [
-        // Radar Scope Painter Container
-        Container(
-          height: 320,
-          padding: const EdgeInsets.all(16),
-          child: Stack(
-            children: [
-              AnimatedBuilder(
-                animation: _sweepController,
-                builder: (context, child) {
-                  return CustomPaint(
-                    size: const Size(double.infinity, double.infinity),
-                    painter: RadarPainter(
-                      angle: _sweepController.value * 2 * pi,
-                      nodes: displayedNodes,
-                      selectedNodeId: _selectedNode?.id,
-                      isTrackMode: _trackedNodeId != null,
-                    ),
-                  );
-                },
-              ),
-
-              // Scale Indicator Overlay
-              Positioned(
-                top: 8,
-                left: 8,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.6),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.greenAccent.withOpacity(0.5)),
-                  ),
-                  child: Text(
-                    'Max Radius: $scaleText',
-                    style: const TextStyle(color: Colors.greenAccent, fontSize: 11, fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ),
-
-              // Touch Overlay for Radar Nodes
-              Positioned.fill(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final center = Offset(constraints.maxWidth / 2, constraints.maxHeight / 2);
-                    final maxRadius = min(constraints.maxWidth, constraints.maxHeight) / 2 - 10;
-
-                    return Stack(
-                      children: displayedNodes.map((node) {
-                        final r = node.distanceFactor * maxRadius;
-                        final x = center.dx + r * cos(node.angle) - 16;
-                        final y = center.dy + r * sin(node.angle) - 16;
-                        final isTracked = _trackedNodeId == node.id;
-
-                        return Positioned(
-                          left: x,
-                          top: y,
-                          child: GestureDetector(
-                            onTap: () {
-                              setState(() {
-                                _selectedNode = node;
-                              });
-                            },
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 200),
-                              width: isTracked ? 40 : 32,
-                              height: isTracked ? 40 : 32,
-                              decoration: BoxDecoration(
-                                color: isTracked
-                                    ? Colors.yellowAccent
-                                    : (node.isEmergency ? Colors.red : Colors.green),
-                                shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white, width: isTracked ? 3 : 2),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: (isTracked ? Colors.yellow : (node.isEmergency ? Colors.red : Colors.green)).withOpacity(0.8),
-                                    blurRadius: isTracked ? 14 : 8,
-                                    spreadRadius: isTracked ? 4 : 2,
-                                  )
-                                ],
-                              ),
-                              child: Icon(
-                                isTracked
-                                    ? Icons.gps_fixed
-                                    : (node.isEmergency ? Icons.warning : Icons.person),
-                                color: isTracked ? Colors.black : Colors.white,
-                                size: isTracked ? 22 : 18,
-                              ),
-                            ),
-                          ),
-                        );
-                      }).toList(),
+          // Radar Scope Container with Dynamic Scale Rings
+          Container(
+            height: 340,
+            padding: const EdgeInsets.all(16),
+            child: Stack(
+              children: [
+                // Animated Radar Painter
+                AnimatedBuilder(
+                  animation: _sweepController,
+                  builder: (context, child) {
+                    return CustomPaint(
+                      size: const Size(double.infinity, double.infinity),
+                      painter: RadarPainter(
+                        angle: _sweepController.value * 2 * pi,
+                        nodes: displayedNodes,
+                        selectedNodeId: _selectedNode?.id,
+                        isTrackMode: _trackedNodeId != null,
+                      ),
                     );
                   },
                 ),
-              ),
 
-              if (displayedNodes.isEmpty)
-                Positioned.fill(
-                  child: Center(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.6),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Text(
-                        'Scanning real Wi-Fi & Bluetooth nodes...\nNo messages or P2P senders received yet.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.greenAccent, fontSize: 12),
-                      ),
+                // Scale Indicator Overlay
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.6),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: Colors.greenAccent.withOpacity(0.5)),
+                    ),
+                    child: Text(
+                      'Max Radius: $scaleText',
+                      style: const TextStyle(color: Colors.greenAccent, fontSize: 11, fontWeight: FontWeight.bold),
                     ),
                   ),
                 ),
-            ],
-          ),
-        ),
 
-        // Selected Node Details Card
-        if (_selectedNode != null)
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: _selectedNode!.isEmergency ? Colors.red.shade900 : Colors.green.shade900,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white24),
-            ),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      _selectedNode!.isEmergency ? Icons.warning : Icons.radar,
-                      color: Colors.white,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                _selectedNode!.name,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
+                // Touch Overlay for Radar Nodes
+                Positioned.fill(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final center = Offset(constraints.maxWidth / 2, constraints.maxHeight / 2);
+                      final maxRadius = min(constraints.maxWidth, constraints.maxHeight) / 2 - 10;
+
+                      return Stack(
+                        children: displayedNodes.map((node) {
+                          final r = node.distanceFactor * maxRadius;
+                          final x = center.dx + r * cos(node.angle) - 16;
+                          final y = center.dy + r * sin(node.angle) - 16;
+                          final isTracked = _trackedNodeId == node.id;
+
+                          return Positioned(
+                            left: x,
+                            top: y,
+                            child: GestureDetector(
+                              onTap: () {
+                                setState(() {
+                                  _selectedNode = node;
+                                });
+                              },
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 200),
+                                width: isTracked ? 40 : 32,
+                                height: isTracked ? 40 : 32,
+                                decoration: BoxDecoration(
+                                  color: isTracked
+                                      ? Colors.yellowAccent
+                                      : (node.isEmergency ? Colors.red : Colors.green),
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: Colors.white, width: isTracked ? 3 : 2),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: (isTracked ? Colors.yellow : (node.isEmergency ? Colors.red : Colors.green)).withOpacity(0.8),
+                                      blurRadius: isTracked ? 14 : 8,
+                                      spreadRadius: isTracked ? 4 : 2,
+                                    )
+                                  ],
+                                ),
+                                child: Icon(
+                                  isTracked
+                                      ? Icons.gps_fixed
+                                      : (node.isEmergency ? Icons.warning : Icons.person),
+                                  color: isTracked ? Colors.black : Colors.white,
+                                  size: isTracked ? 22 : 18,
                                 ),
                               ),
+                            ),
+                          );
+                        }).toList(),
+                      );
+                    },
+                  ),
+                ),
+
+                // Empty State Overlay if no real nodes detected yet
+                if (displayedNodes.isEmpty)
+                  Positioned.fill(
+                    child: Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.6),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          'Scanning real Wi-Fi & Bluetooth nodes...\nNo messages or P2P senders received yet.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.greenAccent, fontSize: 12),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+
+          // Selected Node Details Card with "TRACK THIS PHONE" Action!
+          if (_selectedNode != null) ...[
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _selectedNode!.isEmergency ? Colors.red.shade900 : Colors.green.shade900,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        _selectedNode!.isEmergency ? Icons.warning : Icons.radar,
+                        color: Colors.white,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  _selectedNode!.name,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Text(
+                                    '${_selectedNode!.distanceText} (${_selectedNode!.ttl} hops)',
+                                    style: const TextStyle(
+                                      color: Colors.yellowAccent,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Last Msg: "${_selectedNode!.lastMessage}"',
+                              style: const TextStyle(color: Colors.white70, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.volume_up, color: Colors.white),
+                        onPressed: () {
+                          _bridge.speakTTS(_selectedNode!.lastMessage, language: _currentLanguage);
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Button to Trigger Single-Target Phone Tracking Mode
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _trackedNodeId = _selectedNode!.id;
+                        });
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Tracking Target: ${_selectedNode!.name} (${_selectedNode!.distanceText})'),
+                            backgroundColor: Colors.orange.shade900,
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.gps_fixed, color: Colors.black, size: 18),
+                      label: Text(
+                        _trackedNodeId == _selectedNode!.id ? 'TRACKING ACTIVE' : '🎯 TRACK THIS PHONE ONLY',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.yellowAccent,
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Live Real P2P Senders & GPS Distance',
+                style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
+
+          // List of Real Nearby Senders
+          Expanded(
+            child: displayedNodes.isEmpty
+                ? const Center(
+                    child: Text(
+                      'No P2P messages received yet.\nSend or transmit speech/text to plot senders and GPS distance.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white38),
+                    ),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    itemCount: displayedNodes.length,
+                    itemBuilder: (context, index) {
+                      final node = displayedNodes[index];
+                      final isTracked = _trackedNodeId == node.id;
+                      return Card(
+                        color: isTracked ? Colors.yellow.shade900.withOpacity(0.6) : Colors.grey.shade800,
+                        margin: const EdgeInsets.only(bottom: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          side: isTracked ? const BorderSide(color: Colors.yellowAccent, width: 2) : BorderSide.none,
+                        ),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: isTracked ? Colors.yellowAccent : (node.isEmergency ? Colors.red : Colors.green),
+                            child: Icon(
+                              isTracked ? Icons.gps_fixed : (node.isEmergency ? Icons.warning : Icons.person),
+                              color: isTracked ? Colors.black : Colors.white,
+                            ),
+                          ),
+                          title: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  node.name,
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                 decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.2),
+                                  color: Colors.yellow.shade900.withOpacity(0.6),
                                   borderRadius: BorderRadius.circular(6),
                                 ),
                                 child: Text(
-                                  '${_selectedNode!.distanceText} (${_selectedNode!.ttl} hops)',
+                                  node.distanceText,
                                   style: const TextStyle(
                                     color: Colors.yellowAccent,
                                     fontWeight: FontWeight.bold,
-                                    fontSize: 11,
+                                    fontSize: 12,
                                   ),
                                 ),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 2),
-                          Text(
-                            'Last Msg: "${_selectedNode!.lastMessage}"',
-                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                          subtitle: Text(
+                            'Msg: "${node.lastMessage}"\nTime: ${node.timestamp} | TTL: ${node.ttl}',
+                            style: const TextStyle(color: Colors.white60, fontSize: 12),
                           ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.volume_up, color: Colors.white),
-                      onPressed: () {
-                        _bridge.speakTTS(_selectedNode!.lastMessage, language: _currentLanguage);
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      setState(() {
-                        _trackedNodeId = _selectedNode!.id;
-                      });
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Tracking Target: ${_selectedNode!.name} (${_selectedNode!.distanceText})'),
-                          backgroundColor: Colors.orange.shade900,
+                          trailing: ElevatedButton.icon(
+                            onPressed: () {
+                              setState(() {
+                                _selectedNode = node;
+                                _trackedNodeId = node.id;
+                              });
+                            },
+                            icon: const Icon(Icons.gps_fixed, size: 14),
+                            label: const Text('Track', style: TextStyle(fontSize: 11)),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: isTracked ? Colors.yellowAccent : Colors.grey.shade700,
+                              foregroundColor: isTracked ? Colors.black : Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            ),
+                          ),
                         ),
                       );
                     },
-                    icon: const Icon(Icons.gps_fixed, color: Colors.black, size: 18),
-                    label: Text(
-                      _trackedNodeId == _selectedNode!.id ? 'TRACKING ACTIVE' : '🎯 TRACK THIS PHONE ONLY',
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.yellowAccent,
-                      foregroundColor: Colors.black,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                    ),
                   ),
-                ),
-              ],
-            ),
           ),
-
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              'Live Real P2P Senders & GPS Distance',
-              style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
-            ),
-          ),
-        ),
-
-        // List of Real Nearby Senders
-        Expanded(
-          child: displayedNodes.isEmpty
-              ? const Center(
-                  child: Text(
-                    'No P2P messages received yet.\nSend or transmit speech/text to plot senders and GPS distance.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white38),
-                  ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  itemCount: displayedNodes.length,
-                  itemBuilder: (context, index) {
-                    final node = displayedNodes[index];
-                    final isTracked = _trackedNodeId == node.id;
-                    return Card(
-                      color: isTracked ? Colors.yellow.shade900.withOpacity(0.6) : Colors.grey.shade800,
-                      margin: const EdgeInsets.only(bottom: 8),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                        side: isTracked ? const BorderSide(color: Colors.yellowAccent, width: 2) : BorderSide.none,
-                      ),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: isTracked ? Colors.yellowAccent : (node.isEmergency ? Colors.red : Colors.green),
-                          child: Icon(
-                            isTracked ? Icons.gps_fixed : (node.isEmergency ? Icons.warning : Icons.person),
-                            color: isTracked ? Colors.black : Colors.white,
-                          ),
-                        ),
-                        title: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(
-                              node.name,
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                            ),
-                            Text(
-                              node.distanceText,
-                              style: const TextStyle(
-                                color: Colors.yellowAccent,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ),
-                        subtitle: Text(
-                          'Msg: "${node.lastMessage}"\nTime: ${node.timestamp} | TTL: ${node.ttl}',
-                          style: const TextStyle(color: Colors.white60, fontSize: 12),
-                        ),
-                        trailing: ElevatedButton.icon(
-                          onPressed: () {
-                            setState(() {
-                              _selectedNode = node;
-                              _trackedNodeId = node.id;
-                            });
-                          },
-                          icon: const Icon(Icons.gps_fixed, size: 14),
-                          label: const Text('Track', style: TextStyle(fontSize: 11)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: isTracked ? Colors.yellowAccent : Colors.grey.shade700,
-                            foregroundColor: isTracked ? Colors.black : Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildNearbyPhonesListView(List<RadarNode> displayedNodes) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Text(
-            '📱 Nearby Off-Grid P2P Nodes & Devices',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
-          ),
-        ),
-        Expanded(
-          child: displayedNodes.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.devices_other, size: 48, color: Colors.white38),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'Scanning for nearby Wi-Fi Direct & Bluetooth devices...',
-                        style: TextStyle(color: Colors.white60, fontSize: 14),
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton.icon(
-                        onPressed: () {
-                          _bridge.discoverPeers();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Triggered peer discovery rescan...')),
-                          );
-                        },
-                        icon: const Icon(Icons.refresh),
-                        label: const Text('Rescan Nearby Devices'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.green.shade800,
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  itemCount: displayedNodes.length,
-                  itemBuilder: (context, index) {
-                    final node = displayedNodes[index];
-                    return Card(
-                      color: Colors.grey.shade900,
-                      margin: const EdgeInsets.only(bottom: 10),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        side: BorderSide(
-                          color: node.isEmergency ? Colors.red.shade700 : Colors.green.shade700,
-                          width: 1.5,
-                        ),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(12.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                CircleAvatar(
-                                  backgroundColor: node.isEmergency ? Colors.red.shade900 : Colors.green.shade900,
-                                  child: Icon(
-                                    node.isEmergency ? Icons.warning : Icons.phone_android,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        node.name,
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 15,
-                                        ),
-                                      ),
-                                      Text(
-                                        'ID: ${node.id} | TTL: ${node.ttl} hops',
-                                        style: const TextStyle(color: Colors.grey, fontSize: 12),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(
-                                    color: Colors.yellow.shade900.withOpacity(0.5),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Text(
-                                    node.distanceText,
-                                    style: const TextStyle(
-                                      color: Colors.yellowAccent,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Last Msg: "${node.lastMessage}"',
-                              style: const TextStyle(color: Colors.white70, fontSize: 13),
-                            ),
-                            const SizedBox(height: 10),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: OutlinedButton.icon(
-                                    onPressed: () {
-                                      setState(() {
-                                        _viewMode = 0; // Switch to Radar Scope
-                                        _selectedNode = node;
-                                        _trackedNodeId = node.id;
-                                      });
-                                    },
-                                    icon: const Icon(Icons.radar, size: 16),
-                                    label: const Text('Track on Radar', style: TextStyle(fontSize: 12)),
-                                    style: OutlinedButton.styleFrom(
-                                      foregroundColor: Colors.greenAccent,
-                                      side: const BorderSide(color: Colors.greenAccent),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: ElevatedButton.icon(
-                                    onPressed: () {
-                                      _bridge.speakTTS(node.lastMessage, language: _currentLanguage);
-                                    },
-                                    icon: const Icon(Icons.volume_up, size: 16),
-                                    label: const Text('Read Out', style: TextStyle(fontSize: 12)),
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.grey.shade800,
-                                      foregroundColor: Colors.white,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

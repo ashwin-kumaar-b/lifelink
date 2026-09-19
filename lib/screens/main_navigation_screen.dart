@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/local_storage_service.dart';
 import 'emergency_panic_screen.dart';
 import 'home_screen.dart';
 import 'radar_screen.dart';
@@ -26,6 +27,16 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     super.initState();
     _currentLanguage = widget.selectedLanguage;
     _pageController = PageController(initialPage: _currentIndex);
+    _loadSavedLanguage();
+  }
+
+  Future<void> _loadSavedLanguage() async {
+    final saved = await LocalStorageService().getPreferredLanguage();
+    if (mounted && saved != _currentLanguage) {
+      setState(() {
+        _currentLanguage = saved;
+      });
+    }
   }
 
   @override
@@ -89,7 +100,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           EmergencyPanicScreen(selectedLanguage: _currentLanguage),
 
           // Tab 1: Home Page
-          const HomeScreen(),
+          HomeScreen(selectedLanguage: _currentLanguage),
 
           // Tab 2: Radar + Nearby Phones Screen
           RadarScreen(selectedLanguage: _currentLanguage),
