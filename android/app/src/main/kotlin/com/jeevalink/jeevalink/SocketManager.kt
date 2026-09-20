@@ -116,10 +116,25 @@ class SocketManager(
                     registerPeerIp(clientIp)
                 }
                 socket.use { s ->
+                    val inputStream = java.io.DataInputStream(s.getInputStream())
                     val reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8))
-                    var message: String?
                     while (s.isConnected && !s.isClosed) {
-                        message = reader.readLine() ?: break
+                        var message: String? = null
+                        try {
+                            val length = inputStream.readInt()
+                            if (length in 1..1048576) {
+                                val bytes = ByteArray(length)
+                                inputStream.readFully(bytes)
+                                message = String(bytes, Charsets.UTF_8)
+                            }
+                        } catch (e: Exception) {
+                            // Fallback to legacy readLine if length header parsing fails
+                        }
+
+                        if (message == null) {
+                            message = reader.readLine() ?: break
+                        }
+
                         if (message.isNotBlank()) {
                             Log.d(tag, "Received TCP payload from $clientIp: $message")
                             withContext(Dispatchers.Main) {
@@ -195,8 +210,12 @@ class SocketManager(
                     try {
                         Socket().use { socket ->
                             socket.connect(java.net.InetSocketAddress(ip, port), 600)
+                            val payloadBytes = jsonPayload.toByteArray(Charsets.UTF_8)
+                            val dataOut = java.io.DataOutputStream(socket.getOutputStream())
+                            dataOut.writeInt(payloadBytes.size)
+                            dataOut.write(payloadBytes)
                             val writer = PrintWriter(socket.getOutputStream(), true)
-                            writer.println(jsonPayload)
+                            writer.println()
                             writer.flush()
                             sentAny = true
                             registerPeerIp(ip)

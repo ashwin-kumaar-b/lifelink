@@ -17,8 +17,8 @@ class MainActivity : FlutterActivity() {
     private var bluetoothManager: BluetoothManager? = null
     private var notificationHelper: NotificationHelper? = null
     private var eventSink: EventChannel.EventSink? = null
-
     private var groupOwnerIp: String? = null
+    private val eventBuffer = java.util.Collections.synchronizedList(mutableListOf<Map<String, Any>>())
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -26,11 +26,12 @@ class MainActivity : FlutterActivity() {
         // Initialize Native Notification Helper
         notificationHelper = NotificationHelper(this)
 
-        // EventChannel for streaming asynchronous events to Flutter
+        // EventChannel with EventDispatcher buffering for streaming asynchronous events to Flutter
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL).setStreamHandler(
             object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                     eventSink = events
+                    flushBufferedEvents()
                 }
 
                 override fun onCancel(arguments: Any?) {
@@ -259,7 +260,42 @@ class MainActivity : FlutterActivity() {
 
     private fun sendEvent(data: Map<String, Any>) {
         runOnUiThread {
-            eventSink?.success(data)
+            val sink = eventSink
+            if (sink != null) {
+                try {
+                    sink.success(data)
+                } catch (e: Exception) {
+                    eventSink = null
+                    bufferEvent(data)
+                }
+            } else {
+                bufferEvent(data)
+            }
+        }
+    }
+
+    private fun bufferEvent(data: Map<String, Any>) {
+        synchronized(eventBuffer) {
+            if (eventBuffer.size >= 50) {
+                eventBuffer.removeAt(0)
+            }
+            eventBuffer.add(data)
+        }
+    }
+
+    private fun flushBufferedEvents() {
+        val sink = eventSink ?: return
+        synchronized(eventBuffer) {
+            val iterator = eventBuffer.iterator()
+            while (iterator.hasNext()) {
+                val event = iterator.next()
+                try {
+                    sink.success(event)
+                    iterator.remove()
+                } catch (e: Exception) {
+                    break
+                }
+            }
         }
     }
 

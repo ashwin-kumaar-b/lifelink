@@ -186,8 +186,19 @@ class LocalStorageService {
 
       return freshMessages;
     } catch (e) {
-      print('LocalStorageService: Error loading messages: $e');
+      print('LocalStorageService load error: $e');
       return [];
+    }
+  }
+
+  Future<void> clearAllMessages() async {
+    try {
+      final file = await _getFile(_fileName);
+      if (await file.exists()) {
+        await file.writeAsString(json.encode([]));
+      }
+    } catch (e) {
+      print('LocalStorageService clearAllMessages error: $e');
     }
   }
 

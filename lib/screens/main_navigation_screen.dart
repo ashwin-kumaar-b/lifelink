@@ -5,6 +5,8 @@ import '../services/local_storage_service.dart';
 import '../services/mesh_manager.dart';
 import '../services/native_bridge.dart';
 import '../services/stt_tts_service.dart';
+import '../stores/message_store.dart';
+import '../stores/settings_store.dart';
 import 'emergency_panic_screen.dart';
 import 'home_screen.dart';
 import 'radar_screen.dart';
@@ -150,62 +152,55 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     return Scaffold(
       backgroundColor: navBgColor,
       extendBody: false, // Ensures screen content sits cleanly above the navigation bar
-      body: PageView(
-        controller: _pageController,
-        onPageChanged: (index) {
-          setState(() {
-            _currentIndex = index;
-          });
-        },
-        physics: const BouncingScrollPhysics(),
-        children: [
-          // Tab 0: Emergency SOS Screen
-          EmergencyPanicScreen(selectedLanguage: _currentLanguage),
+      body: ListenableBuilder(
+        listenable: Listenable.merge([MessageStore(), SettingsStore()]),
+        builder: (context, child) {
+          final messages = MessageStore().messages;
+          final currentLang = SettingsStore().selectedLanguage;
 
-          // Tab 1: Home Page
-          HomeScreen(
-            selectedLanguage: _currentLanguage,
-            messages: _messages,
-            onMessageSent: (sentPacket) {
-              if (mounted) {
-                setState(() {
-                  _messages.removeWhere((m) => m.id == sentPacket.id);
-                  _messages.insert(0, sentPacket);
-                });
-              }
-            },
-            onMessageDeleted: (deletedId) {
-              if (mounted) {
-                setState(() {
-                  _messages.removeWhere((m) => m.id == deletedId);
-                });
-              }
-            },
-            onAllMessagesCleared: () {
-              if (mounted) {
-                setState(() {
-                  _messages.clear();
-                });
-              }
-            },
-          ),
-
-          // Tab 2: Radar + Nearby Phones Screen
-          RadarScreen(
-            selectedLanguage: _currentLanguage,
-            messages: _messages,
-          ),
-
-          // Tab 3: Settings Screen
-          SettingsScreen(
-            selectedLanguage: _currentLanguage,
-            onLanguageChanged: (newLang) {
+          return PageView(
+            controller: _pageController,
+            onPageChanged: (index) {
               setState(() {
-                _currentLanguage = newLang;
+                _currentIndex = index;
               });
             },
-          ),
-        ],
+            physics: const BouncingScrollPhysics(),
+            children: [
+              // Tab 0: Emergency SOS Screen
+              EmergencyPanicScreen(selectedLanguage: currentLang),
+
+              // Tab 1: Home Page
+              HomeScreen(
+                selectedLanguage: currentLang,
+                messages: messages,
+                onMessageSent: (sentPacket) {
+                  MessageStore().addMessage(sentPacket);
+                },
+                onMessageDeleted: (deletedId) {
+                  MessageStore().deleteMessage(deletedId);
+                },
+                onAllMessagesCleared: () {
+                  MessageStore().clearAllMessages();
+                },
+              ),
+
+              // Tab 2: Radar + Nearby Phones Screen
+              RadarScreen(
+                selectedLanguage: currentLang,
+                messages: messages,
+              ),
+
+              // Tab 3: Settings Screen
+              SettingsScreen(
+                selectedLanguage: currentLang,
+                onLanguageChanged: (newLang) {
+                  SettingsStore().setLanguage(newLang);
+                },
+              ),
+            ],
+          );
+        },
       ),
       bottomNavigationBar: AnimatedContainer(
         duration: const Duration(milliseconds: 300),

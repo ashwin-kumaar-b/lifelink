@@ -19,6 +19,7 @@ class FakePathProviderPlatform extends Fake
 }
 
 class MockNativeBridge extends NativeBridge {
+  MockNativeBridge() : super.forTesting();
   final List<MessagePacket> sentPackets = [];
 
   @override

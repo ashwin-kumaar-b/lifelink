@@ -4,34 +4,49 @@ import 'package:flutter/services.dart';
 import '../models/message_packet.dart';
 
 class NativeBridge {
+  static final NativeBridge _instance = NativeBridge._internal();
+  factory NativeBridge() => _instance;
+  
+  @visibleForTesting
+  NativeBridge.forTesting();
+
+  NativeBridge._internal() {
+    _initStream();
+  }
+
   static const MethodChannel _channel = MethodChannel('com.jeevalink/bridge');
   static const EventChannel _eventChannel = EventChannel('com.jeevalink/events');
 
-  Stream<Map<dynamic, dynamic>>? _eventStream;
-  final StreamController<Map<dynamic, dynamic>> _webStreamController =
+  final StreamController<Map<dynamic, dynamic>> _broadcastController =
       StreamController<Map<dynamic, dynamic>>.broadcast();
 
-  Stream<Map<dynamic, dynamic>> get eventStream {
-    if (kIsWeb) {
-      return _webStreamController.stream;
-    }
-    _eventStream ??= _eventChannel
+  void _initStream() {
+    if (kIsWeb) return;
+    _eventChannel
         .receiveBroadcastStream()
-        .map((event) => Map<dynamic, dynamic>.from(event));
-    return _eventStream!;
+        .listen(
+          (event) {
+            if (event != null) {
+              _broadcastController.add(Map<dynamic, dynamic>.from(event));
+            }
+          },
+          onError: (error) {
+            debugPrint('NativeBridge event stream error: $error');
+          },
+        );
   }
 
+  Stream<Map<dynamic, dynamic>> get eventStream => _broadcastController.stream;
+
   void emitSimulatedEvent(Map<String, dynamic> event) {
-    if (kIsWeb) {
-      _webStreamController.add(event);
-    }
+    _broadcastController.add(event);
   }
 
   Future<bool> discoverPeers() async {
     if (kIsWeb) {
       // Simulate real web P2P peer discovery for browser testing
       await Future.delayed(const Duration(milliseconds: 300));
-      _webStreamController.add({
+      _broadcastController.add({
         'type': 'PEERS_DISCOVERED',
         'peers': [
           {
@@ -59,7 +74,7 @@ class NativeBridge {
 
   Future<bool> connectPeer(String deviceAddress) async {
     if (kIsWeb) {
-      _webStreamController.add({
+      _broadcastController.add({
         'type': 'STATUS_CHANGED',
         'status': 'CONNECTED_CLIENT',
       });
@@ -78,7 +93,7 @@ class NativeBridge {
 
   Future<bool> disconnectPeer() async {
     if (kIsWeb) {
-      _webStreamController.add({
+      _broadcastController.add({
         'type': 'STATUS_CHANGED',
         'status': 'DISCONNECTED',
       });
@@ -97,7 +112,7 @@ class NativeBridge {
     if (kIsWeb) {
       // Simulate receiving packet back from peer for local web testing
       Future.delayed(const Duration(milliseconds: 600), () {
-        _webStreamController.add({
+        _broadcastController.add({
           'type': 'MESSAGE_RECEIVED',
           'payload': packet.toJson(),
         });
@@ -119,7 +134,7 @@ class NativeBridge {
   Future<bool> startSTT({String language = 'en-US'}) async {
     if (kIsWeb) {
       Future.delayed(const Duration(seconds: 2), () {
-        _webStreamController.add({
+        _broadcastController.add({
           'type': 'STT_RESULT',
           'text': 'Emergency help needed near sector 4',
         });

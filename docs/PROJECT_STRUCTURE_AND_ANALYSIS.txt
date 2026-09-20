@@ -1,0 +1,120 @@
+================================================================================
+JEEVALINK (LIFELINK) - COMPLETE FILE STRUCTURE AND DEEP CODEBASE ANALYSIS
+================================================================================
+
+1. PROJECT DIRECTORY TREE
+--------------------------------------------------------------------------------
+lifelink/
+├── .gitattributes                              (Git LFS model tracking rules)
+├── .gitignore                                 (Build output and IDE exclusions)
+├── .metadata                                  (Flutter metadata)
+├── README.md                                  (Project documentation)
+├── analysis_options.yaml                      (Dart linter rules)
+├── pubspec.yaml                               (Package dependencies & assets)
+├── pubspec.lock                               (Locked dependency versions)
+├── assets/
+│   ├── models/
+│   │   └── english/
+│   │       ├── model.int8.onnx                (Pre-packaged English STT model)
+│   │       └── tokens.txt                     (English vocabulary tokens)
+│   └── sounds/
+│       └── clear_all_whoosh.wav               (UI sound effect)
+├── android/
+│   └── app/src/main/
+│       ├── AndroidManifest.xml                (Permissions & Foreground Service)
+│       └── kotlin/com/jeevalink/jeevalink/
+│           ├── MainActivity.kt                (MethodChannel & EventChannel hub)
+│           ├── JeevaLinkForegroundService.kt  (Foreground Service & WakeLock)
+│           ├── NotificationHelper.kt          (WhatsApp-style notifications)
+│           ├── SocketManager.kt               (TCP Sockets Port 8888)
+│           ├── WifiDirectManager.kt           (Wi-Fi Direct P2P discovery)
+│           ├── BluetoothManager.kt            (Bluetooth RFCOMM fallback)
+│           └── SpeechManager.kt               (Native Android Speech bridge)
+└── lib/
+    ├── main.dart                              (App entry & permission wrapper)
+    ├── models/
+    │   └── message_packet.dart                (Message JSON Data Model)
+    ├── services/
+    │   ├── stt_tts_service.dart               (Sherpa-ONNX STT & FlutterTTS)
+    │   ├── mesh_manager.dart                  (Multi-Hop Relay & Deduplication)
+    │   ├── native_bridge.dart                 (Dart MethodChannel interface)
+    │   ├── local_storage_service.dart         (24-hour JSON storage)
+    │   ├── gps_service.dart                   (GPS location tracker)
+    │   └── model_downloader_service.dart      (GitHub Release model downloader)
+    ├── utils/
+    │   └── gps_calculator.dart                (Haversine distance & bearing)
+    ├── widgets/
+    │   └── app_drawer.dart                    (App navigation drawer)
+    └── screens/
+        ├── main_navigation_screen.dart        (Bottom navigation root shell)
+        ├── home_screen.dart                   (PTT Voice & 24h message feed)
+        ├── emergency_panic_screen.dart        (10s Countdown Glassmorphism SOS)
+        ├── radar_screen.dart                  (360° animated radar map)
+        ├── message_screen.dart                (Message history log & playback)
+        ├── connection_screen.dart             (P2P Peer manager)
+        └── settings_screen.dart               (User profile & background status)
+
+
+2. DEEP FILE-BY-FILE FUNCTIONAL ANALYSIS
+--------------------------------------------------------------------------------
+
+[FLUTTER FRONTEND & CORE SERVICES]
+- lib/main.dart:
+  Initializes Sherpa-ONNX bindings, requests runtime permissions (location, microphone, notification, nearby devices, bluetooth), starts JeevaLinkForegroundService, prompts battery optimization exemption, and renders MainNavigationScreen.
+
+- lib/models/message_packet.dart:
+  Represents JSON payload exchanged over TCP/Bluetooth sockets. Contains id, type (EMERGENCY/NORMAL), language, text, latitude, longitude, ttl, timestamp, and isSelf flag.
+
+- lib/services/stt_tts_service.dart:
+  Runs local Sherpa-ONNX speech recognition on 16kHz WAV audio recorded by microphone. Includes fuzzy emergency keyword matcher (Levenshtein distance <= 2) for auto-escalating priority to EMERGENCY.
+
+- lib/services/mesh_manager.dart:
+  Handles multi-hop store-and-forward routing. Maintains a 1000-item deduplication cache. Decrements TTL and re-broadcasts packets to nearby nodes. Syncs historical buffers when new peers connect.
+
+- lib/services/native_bridge.dart:
+  MethodChannel and EventChannel communication wrapper for invoking Kotlin native APIs and receiving async network events.
+
+- lib/services/local_storage_service.dart:
+  24-hour persistent local JSON message storage in application document directory. Auto-prunes older messages.
+
+- lib/services/model_downloader_service.dart:
+  Downloads language models (Tamil, Hindi, Telugu) dynamically from GitHub Releases with live download progress callbacks.
+
+- lib/utils/gps_calculator.dart:
+  Computes Haversine distance in meters/km and bearing in radians/degrees for radar display.
+
+[ANDROID NATIVE KOTLIN LAYER]
+- AndroidManifest.xml:
+  Declares permissions (Wi-Fi Direct, Bluetooth, Microphone, Location, Notifications, Foreground Service, WakeLock, Battery Exemption) and registers JeevaLinkForegroundService under connectedDevice|dataSync foregroundType.
+
+- MainActivity.kt:
+  MethodChannel dispatcher. Initializes NotificationHelper, SocketManager, WifiDirectManager, BluetoothManager, and SpeechManager. Launches JeevaLinkForegroundService on startup.
+
+- JeevaLinkForegroundService.kt:
+  Android Foreground Service extending Service. Holds PARTIAL_WAKE_LOCK so CPU stays awake during screen-off states to process incoming TCP socket bytes and Bluetooth RFCOMM packets.
+
+- NotificationHelper.kt:
+  Posts WhatsApp-style notifications. Emergency channel uses high priority, red accent theme, heads-up alert banner, and displays sender name, message, timing, and GPS coordinates. Normal channel uses blue status bar notifications. Thread-safe deduplication cache suppresses duplicate alerts.
+
+- SocketManager.kt:
+  TCP socket server listening on Port 8888. Broadcasts JSON payload to all connected peer IP addresses.
+
+- WifiDirectManager.kt:
+  Wraps Android WifiP2pManager for off-grid Wi-Fi Direct peer discovery and group creation.
+
+- BluetoothManager.kt:
+  RFCOMM Bluetooth fallback connection manager and peer scanner.
+
+- SpeechManager.kt:
+  Android native SpeechRecognizer fallback bridge.
+
+
+3. AI SYSTEM PROMPT GUIDE
+--------------------------------------------------------------------------------
+Target System: JeevaLink Offline Emergency Communication Network.
+Key Rules:
+1. All network communication is internet-independent via TCP Port 8888 and Bluetooth RFCOMM sockets.
+2. Background execution is sustained 24/7 by JeevaLinkForegroundService.kt with a PARTIAL_WAKE_LOCK and foregroundServiceType="connectedDevice|dataSync".
+3. Speech-to-Text runs 100% locally via Sherpa-ONNX INT8 Whisper models.
+4. Emergency SOS triggers a 10-second countdown glassmorphism modal on emergency_panic_screen.dart where only "NO" (Cancel Alert) is clickable. "YES" is an automatic read-only indicator.
+================================================================================

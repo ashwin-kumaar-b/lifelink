@@ -7,6 +7,8 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 import 'package:record/record.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'local_storage_service.dart';
+import 'speech_model_registry.dart';
+import '../stores/settings_store.dart';
 
 class SttTtsService {
   static final SttTtsService _instance = SttTtsService._internal();
@@ -71,10 +73,12 @@ class SttTtsService {
   Future<bool> loadModelForLanguage(String languageCode) async {
     final langTag = languageCode.toLowerCase().trim();
     if (_isSttInitialized && _loadedLanguage == langTag && _sttRecognizer != null) {
+      SettingsStore().setSttModelStatus(SttModelStatus.ready);
       return true;
     }
 
     _isSttLoading = true;
+    SettingsStore().setSttModelStatus(SttModelStatus.loading);
     try {
       // Free previous recognizer instance if switching to a new language
       if (_sttRecognizer != null && _loadedLanguage != langTag) {
@@ -89,9 +93,12 @@ class SttTtsService {
       }
 
       // 0. Dedicated Single-File CTC Models (Telugu, Hindi, Tamil, English)
-      if (langTag == 'te' || langTag == 'hi' || langTag == 'ta' || langTag == 'en') {
+      if (SpeechModelRegistry.isSupported(langTag)) {
         final success = await _loadNativeIndicModel(langTag);
-        if (success) return true;
+        if (success) {
+          SettingsStore().setSttModelStatus(SttModelStatus.ready);
+          return true;
+        }
       }
 
       final docDir = await getApplicationDocumentsDirectory();

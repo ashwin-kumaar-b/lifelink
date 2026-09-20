@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
+import 'speech_model_registry.dart';
 
 typedef DownloadProgressCallback = void Function(int receivedBytes, int totalBytes, double progressPercent);
 
@@ -67,13 +68,16 @@ class ModelDownloaderService {
         await modelDir.create(recursive: true);
       }
 
+      final modelConfig = SpeechModelRegistry.getConfig(langTag);
+      final tokensFileName = modelConfig.tokensFileName;
+
       final modelFile = File('${modelDir.path}/model.int8.onnx');
       final tokensFile = File('${modelDir.path}/tokens.txt');
 
-      // 1. Download tokens.txt if missing
+      // 1. Download language-specific tokens.txt if missing
       if (!await tokensFile.exists() || (await tokensFile.length()) < 100) {
-        final tokensUrl = '${githubReleaseBaseUrl}tokens.txt';
-        debugPrint('Downloading tokens from $tokensUrl...');
+        final tokensUrl = '$githubReleaseBaseUrl$tokensFileName';
+        debugPrint('Downloading language-specific tokens [$tokensFileName] from $tokensUrl...');
         await _downloadFileWithRetry(tokensUrl, tokensFile);
       }
 
